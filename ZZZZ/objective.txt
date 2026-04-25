@@ -1,0 +1,34 @@
+Dev 1 Brief — Backend Infrastructure & Ingestion
+Who you are and what you own
+You are Dev 1 on a 3-person team building a CV reformatting SaaS. Your job is backend infrastructure — the foundation everything else runs on. You own the API layer, authentication, file storage, database, and the file extraction module that reads raw CV files.
+You do not touch AI agents (Dev 2) or Word template rendering (Dev 3). But everything they build plugs into what you create.
+
+What the product does
+Companies in the international development and renewable energy sector submit expert CVs to donors like GIZ and World Bank for project bids. These CVs must follow strict donor-mandated formats. The product automates this — a user uploads a raw CV (PDF or DOCX), selects a target format (GIZ or World Bank), optionally provides a Terms of Reference document, and gets back a properly formatted Word document.
+The full pipeline has 5 AI agents followed by a Word renderer. Your job is everything before and around that pipeline — receiving inputs, storing files, tracking job status, serving outputs.
+
+Tech stack decisions already made
+These are locked. Do not deviate:
+
+Framework: FastAPI (Python)
+Auth: Supabase Auth
+Database: Supabase Postgres
+File storage: Supabase Storage
+Async: FastAPI BackgroundTasks (not Celery — that comes later at scale)
+AI: OpenAI GPT-4o (used by Dev 2, not you)
+Python: 3.10+
+
+
+The one file you already have
+models.py is complete and locked. It lives at the root of the backend directory. It contains the CVData Pydantic schema — the central data contract the whole system uses. You import from it but never modify it without agreement from all three developers.
+
+
+Phase 1 — Project structure
+Then write these three files:
+api/config.py
+api/server.py
+api/routers/health.py
+
+Phase 1 done when: uvicorn api.server:app --reload starts without errors and GET /health returns {"status": "ok"}.
+
+

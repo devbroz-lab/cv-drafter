@@ -1,0 +1,43 @@
+# Environment
+.env
+.venv/
+venv/
+venv_312/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local runs (keep folder via .gitkeep)
+runs/*
+!runs/.gitkeep
+scripts/runs/
+
+# Local samples / secrets
+supabase_creds.txt
+uploadtest.pdf
+Dejan.docx
+Erwin_WB.docx
+Merita_giz.docx
+Untitled
+memory.md
+models_updated.py
+ZZZZ/sessions_add_auth.sql
+ZZZZ/sessions_add_storage.sql
+ZZZZ/sessions_schema_v3.sql
+ZZZZ/sessions_schema_v4.sql
+ZZZZ/sessions_schema_v5.sql
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
