@@ -42,7 +42,15 @@ except ImportError as _err:
         "docxtpl is required for the GIZ renderer. " "Run: pip install -e '.[dev]'"
     ) from _err
 
-from pipeline.paths import TEMPLATE_PATH, TEMPLATE_ROOT, ensure_under, get_run_dir
+from pipeline.paths import (
+    TEMPLATE_PATH,
+    TEMPLATE_ROOT,
+    ensure_under,
+    get_giz_dynamic_template_path,
+    get_giz_dynamic_unpack_dir,
+    get_run_dir,
+)
+from templates.giz_dynamic_template import build_dynamic_template
 
 # ---------------------------------------------------------------------------
 # CEFR mapping — kept local so the renderer has zero dependency on the
@@ -144,6 +152,8 @@ def _build_context(cv: dict) -> dict:
     extracted_kq = [kq.strip() for kq in cv.get("key_qualifications", []) if kq.strip()]
     key_qualifications = generated_kq if generated_kq else extracted_kq
 
+    publications = [p.strip() for p in cv.get("publications", []) if p.strip()]
+
     # Countries of experience rows
     countries_of_experience = []
     for ce in cv.get("countries_of_experience", []):
@@ -207,6 +217,7 @@ def _build_context(cv: dict) -> dict:
         "education": education,
         "languages": languages,
         "key_qualifications": key_qualifications,
+        "publications": publications,
         "countries_of_experience": countries_of_experience,
         "relevant_projects": relevant_projects,
     }
@@ -325,7 +336,30 @@ def run(
     out_path = ensure_under(output_path, run_dir) if output_path else run_dir / "output.docx"
 
     context = _build_context(cv_data)
-    doc = DocxTemplate(str(tpl_path))
+    counts = {
+        "education": len(context.get("education", [])),
+        "languages": len(context.get("languages", [])),
+        "countries_of_experience": len(context.get("countries_of_experience", [])),
+        "relevant_projects": len(context.get("relevant_projects", [])),
+        "key_qualifications": len(context.get("key_qualifications", [])),
+        "publications": len(context.get("publications", [])),
+    }
+    dynamic_template_path = get_giz_dynamic_template_path(session_id)
+    dynamic_unpacked_dir = get_giz_dynamic_unpack_dir(session_id)
+
+    try:
+        build_dynamic_template(
+            src_docx=tpl_path,
+            out_docx=dynamic_template_path,
+            counts=counts,
+            unpacked_dir=dynamic_unpacked_dir,
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to build dynamic GIZ template for run {session_id}: {exc}"
+        ) from exc
+
+    doc = DocxTemplate(str(dynamic_template_path))
     doc.render(context)
     doc.save(str(out_path))
 
