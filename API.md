@@ -73,7 +73,7 @@ Create a new CV reformatting session.
 ```
 
 **Parameters**:
-- `target_format` *(required, enum)*: `"giz"` or `"world_bank"` (World Bank not yet supported)
+- `target_format` *(required, enum)*: `"giz"` or `"world_bank"`. World Bank rendering requires `templates/WB-Template.docx` at runtime (same pattern as GIZ).
 - `source_filename` *(required, string)*: Name of the CV file (e.g., `"cv.docx"`, `"cv.pdf"`)
 - `tor_filename` *(optional, string)*: Name of the Terms of Reference file
 - `proposed_position` *(optional, string)*: Position title for the formatted CV

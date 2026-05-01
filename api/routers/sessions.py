@@ -108,15 +108,6 @@ async def create_session(
     payload: SessionCreateRequest,
     current_user: CurrentUser,
 ) -> SessionCreateResponse:
-    # World Bank format not yet supported — renderer not implemented.
-    if payload.target_format == "world_bank":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "World Bank format is not yet available. " "Only 'giz' is supported at this time."
-            ),
-        )
-
     # Rate limit: block users who already have too many active sessions.
     try:
         active = count_active_sessions(current_user.user_id)
