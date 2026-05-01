@@ -19,6 +19,8 @@ RUNS_ROOT: Path = _BACKEND_ROOT / "runs"
 # GIZ Word template used by the renderer
 TEMPLATE_ROOT: Path = _BACKEND_ROOT / "templates"
 TEMPLATE_PATH: Path = TEMPLATE_ROOT / "GIZ-Template.docx"
+GIZ_DYNAMIC_TEMPLATE_NAME = "GIZ-Template.dynamic.docx"
+GIZ_DYNAMIC_UNPACK_DIR_NAME = "_giz_template_unpacked"
 
 # run_id / session_id validation — letters, digits, hyphens, underscores only
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -55,3 +57,13 @@ def get_run_dir(run_id: str) -> Path:
     """Return the run directory path for *run_id*, validated and scoped to RUNS_ROOT."""
     valid_id = validate_run_id(run_id)
     return resolve_under(RUNS_ROOT, valid_id)
+
+
+def get_giz_dynamic_template_path(run_id: str) -> Path:
+    """Return the run-scoped dynamic GIZ template path."""
+    return resolve_under(get_run_dir(run_id), GIZ_DYNAMIC_TEMPLATE_NAME)
+
+
+def get_giz_dynamic_unpack_dir(run_id: str) -> Path:
+    """Return the run-scoped unpack directory used for dynamic template build."""
+    return resolve_under(get_run_dir(run_id), GIZ_DYNAMIC_UNPACK_DIR_NAME)
