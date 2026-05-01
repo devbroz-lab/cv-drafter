@@ -11,7 +11,7 @@ When the user approves, the approve endpoint schedules the next phase.
 Phase 1  (run_phase1)  — Agents 1 & 2 in parallel → checkpoint_1_pending
 Phase 2  (run_phase2)  — Agent 3 → checkpoint_2_pending
 Phase 3  (run_phase3)  — Agents 4, 5, 6 → checkpoint_3_pending | reviewer_blocked
-Phase 4  (run_phase4)  — GIZ Renderer → upload output.docx → completed
+Phase 4  (run_phase4)  — Renderer (GIZ or World Bank) → upload output.docx → completed
 
 Each phase:
   • Calls set_processing() at the top.
@@ -246,10 +246,12 @@ async def run_phase3_resume(*, session_id: str) -> None:
 async def _run_compressor_and_halt(session_id: str, run_dir: Path) -> None:
     """Shared helper: run the compressor, then halt at checkpoint 3."""
 
-    # Resolve compression target from page_limit or fallback ratio
-    from templates.giz import get_compression_params
+    # Resolve compression target from page_limit or fallback ratio (format-specific)
+    from templates.registry import get_compression_params
 
-    cp = get_compression_params(session_id)
+    row = get_session_row(session_id) or {}
+    target_format = row.get("target_format", "giz")
+    cp = get_compression_params(target_format, session_id)
     _run_if_needed(
         run_dir,
         "compressor",
@@ -271,8 +273,8 @@ async def _run_compressor_and_halt(session_id: str, run_dir: Path) -> None:
 
 async def run_phase4(*, session_id: str) -> None:
     """
-    Run the GIZ renderer, upload output.docx to Supabase Storage, and set
-    the session to completed.
+    Run the renderer for the session's target format, upload output.docx to
+    Supabase Storage, and set the session to completed.
     """
     set_processing(session_id)
     run_dir = get_run_dir(session_id)
@@ -285,15 +287,16 @@ async def run_phase4(*, session_id: str) -> None:
 
         update_step(run_dir, "renderer", "running")
 
-        from templates.giz import run as giz_render
+        row = get_session_row(session_id) or {}
+        target_format = row.get("target_format", "giz")
 
-        output_path = giz_render(session_id)
+        from templates.registry import get_renderer
+
+        output_path = get_renderer(target_format)(session_id)
 
         update_step(run_dir, "renderer", "done")
 
         # Upload output.docx to Supabase Storage
-        row = get_session_row(session_id) or {}
-        target_format = row.get("target_format", "giz")
         round_num = int(row.get("round") or 1)
 
         output_key = build_object_path(
