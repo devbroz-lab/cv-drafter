@@ -1,5 +1,6 @@
 """Session lifecycle endpoints backed by Supabase."""
 
+import json
 from typing import Annotated, Any
 
 from fastapi import (
@@ -12,6 +13,8 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pipeline.text_encoding import UTF_8
+from pipeline.utils import load_tor_envelope, resolve_selected_tor_pool
 
 from api.models.requests import (
     CHECKPOINT_RESUME_MAP,
@@ -20,6 +23,8 @@ from api.models.requests import (
     ApproveResponse,
     CommentsRequest,
     CommentsResponse,
+    FieldEditRequest,
+    FieldEditResponse,
     FileUploadResponse,
     ManifestResponse,
     ManifestStepResponse,
@@ -33,6 +38,9 @@ from api.models.requests import (
     SessionStatusResponse,
     SessionStatusUpdateRequest,
     SignedDownloadResponse,
+    TorPoolSelectionRequest,
+    TorPoolSelectionResponse,
+    TorPoolsResponse,
 )
 from api.services import storage as storage_service
 from api.services.auth import AuthenticatedUser, get_current_user
@@ -43,6 +51,7 @@ from api.services.database import (
     update_session_row,
     update_session_storage_keys,
 )
+from api.services.dot_path import DotPathError, set_by_dot_path
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
@@ -54,6 +63,7 @@ _MAX_ACTIVE_SESSIONS = 3
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 
 def _row_to_status(row: dict[str, Any]) -> SessionStatusResponse:
@@ -132,7 +142,6 @@ async def create_session(
             target_format=payload.target_format,
             source_filename=payload.source_filename,
             tor_filename=payload.tor_filename,
-            proposed_position=payload.proposed_position,
             category=payload.category,
             employer=payload.employer,
             years_with_firm=payload.years_with_firm,
@@ -398,6 +407,39 @@ async def signed_url_for_output(
     return SignedDownloadResponse(signed_url=signed, expires_in=expires_seconds)
 
 
+@router.get("/{session_id}/files/preview", response_class=None)
+async def get_preview_docx(
+    session_id: str,
+    current_user: CurrentUser,
+) -> Any:
+    """
+    Stream runs/{session_id}/preview.docx directly.
+
+    preview.docx is a local-only artifact produced by the preview render step
+    before field_editor_pending.  It is never uploaded to Supabase Storage,
+    so it cannot be served via a signed URL — it is streamed directly from disk.
+    Only available while the file exists (i.e. after content_reviewer completes).
+    """
+    from fastapi.responses import FileResponse
+
+    _require_owned_session(session_id, current_user.user_id)
+
+    from pipeline.paths import get_run_dir
+
+    run_dir = get_run_dir(session_id)
+    preview_path = run_dir / "preview.docx"
+    if not preview_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="preview.docx not available — pipeline has not reached field_editor_pending yet",
+        )
+    return FileResponse(
+        path=str(preview_path),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename="preview.docx",
+    )
+
+
 # ── POST /sessions/{id}/start ─────────────────────────────────────────────────
 
 
@@ -571,6 +613,155 @@ async def get_session_manifest(
     )
 
 
+# ── GET /sessions/{id}/tor/pools ──────────────────────────────────────────────
+
+
+@router.get("/{session_id}/tor/pools", response_model=TorPoolsResponse)
+async def get_tor_pools(
+    session_id: str,
+    current_user: CurrentUser,
+) -> TorPoolsResponse:
+    """
+    Return tor_data pools and selected_pool_index for checkpoint-1 picker UIs.
+    """
+    row = _require_owned_session(session_id, current_user.user_id)
+
+    from pipeline.paths import get_run_dir
+
+    run_dir = get_run_dir(session_id)
+    tor_path = run_dir / "tor_data.json"
+    if not tor_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="tor_data.json not found — ToR summarizer may not have completed yet",
+        )
+
+    try:
+        tor_raw = load_tor_envelope(tor_path, context="api.sessions.get_tor_pools")
+        pools = tor_raw.get("pools")
+        if not isinstance(pools, list) or len(pools) == 0:
+            raise ValueError("tor_data.pools must be a non-empty list")
+        selected_pool_index = tor_raw.get("selected_pool_index")
+        if selected_pool_index is not None:
+            if isinstance(selected_pool_index, bool) or not isinstance(selected_pool_index, int):
+                raise ValueError("selected_pool_index must be an integer or null")
+            if selected_pool_index < 0 or selected_pool_index >= len(pools):
+                raise ValueError(
+                    f"selected_pool_index {selected_pool_index} out of range "
+                    f"for {len(pools)} pool(s)"
+                )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load ToR pools: {exc}",
+        ) from exc
+
+    return TorPoolsResponse(
+        session_id=row["id"],
+        pools=pools,
+        selected_pool_index=selected_pool_index,
+    )
+
+
+# ── POST /sessions/{id}/tor/select-pool ──────────────────────────────────────
+
+
+@router.post("/{session_id}/tor/select-pool", response_model=TorPoolSelectionResponse)
+async def select_tor_pool(
+    session_id: str,
+    payload: TorPoolSelectionRequest,
+    current_user: CurrentUser,
+) -> TorPoolSelectionResponse:
+    """Persist selected_pool_index in runs/{session_id}/tor_data.json."""
+    row = _require_owned_session(session_id, current_user.user_id)
+
+    from pipeline.paths import get_run_dir
+
+    run_dir = get_run_dir(session_id)
+    tor_path = run_dir / "tor_data.json"
+    if not tor_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="tor_data.json not found — ToR summarizer may not have completed yet",
+        )
+
+    try:
+        tor_raw = load_tor_envelope(tor_path, context="api.sessions.select_tor_pool")
+        pools = tor_raw.get("pools")
+        if not isinstance(pools, list) or len(pools) == 0:
+            raise ValueError("tor_data.pools must be a non-empty list")
+
+        selected_idx = int(payload.selected_pool_index)
+        if selected_idx < 0 or selected_idx >= len(pools):
+            raise ValueError(
+                f"selected_pool_index {selected_idx} out of range "
+                f"for {len(pools)} pool(s)"
+            )
+
+        tor_raw["selected_pool_index"] = selected_idx
+        tor_path.write_text(json.dumps(tor_raw, indent=2, ensure_ascii=False), encoding=UTF_8)
+        selected_pool = resolve_selected_tor_pool(
+            tor_raw,
+            context="api.sessions.select_tor_pool",
+            allow_legacy_data=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to persist selected pool: {exc}",
+        ) from exc
+
+    # Derive proposed_position from the selected pool's position_title and
+    # propagate it to manifest.params, cv_data.json, and the DB session row
+    # so that downstream agents (3–6) receive the ToR-confirmed position title.
+    position_title: str = selected_pool.get("position_title") or ""
+    if position_title:
+        # Patch manifest.params.proposed_position
+        manifest_path = run_dir / "manifest.json"
+        if manifest_path.exists():
+            try:
+                _manifest = json.loads(manifest_path.read_text(encoding=UTF_8))
+                _manifest.setdefault("params", {})["proposed_position"] = position_title
+                manifest_path.write_text(
+                    json.dumps(_manifest, indent=2, ensure_ascii=False), encoding=UTF_8
+                )
+            except Exception:
+                pass  # non-fatal — agents fall back to CVData value
+
+        # Patch cv_data.json["data"]["proposed_position"]
+        cv_data_path = run_dir / "cv_data.json"
+        if cv_data_path.exists():
+            try:
+                _cv = json.loads(cv_data_path.read_text(encoding=UTF_8))
+                _cv.setdefault("data", {})["proposed_position"] = position_title
+                cv_data_path.write_text(
+                    json.dumps(_cv, indent=2, ensure_ascii=False), encoding=UTF_8
+                )
+            except Exception:
+                pass  # non-fatal
+
+        # Patch DB sessions.proposed_position
+        try:
+            from api.services.database import get_service_client
+            get_service_client().table("sessions").update(
+                {"proposed_position": position_title}
+            ).eq("id", session_id).execute()
+        except Exception:
+            pass  # non-fatal
+
+    return TorPoolSelectionResponse(
+        session_id=row["id"],
+        selected_pool_index=selected_idx,
+        pool_count=len(pools),
+        position_title=position_title or None,
+        message="ToR pool selection saved.",
+    )
+
+
 # ── POST /sessions/{id}/approve/{checkpoint} ──────────────────────────────────
 
 
@@ -603,6 +794,27 @@ async def approve_checkpoint(
             detail=(f"Session is not at '{checkpoint}' " f"(current status: {row['status']})"),
         )
 
+    # checkpoint_1: require a valid ToR pool selection before proceeding
+    if checkpoint == "checkpoint_1":
+        from pipeline.paths import get_run_dir as _get_run_dir
+
+        _run_dir_c1 = _get_run_dir(session_id)
+        tor_path = _run_dir_c1 / "tor_data.json"
+        if not tor_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="tor_data.json missing. Wait for checkpoint_1 artifacts before approval.",
+            )
+        try:
+            tor_raw = load_tor_envelope(tor_path, context="api.sessions.approve_checkpoint")
+            resolve_selected_tor_pool(
+                tor_raw,
+                context="api.sessions.approve_checkpoint",
+                allow_legacy_data=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
     # Mark checkpoint as approved in the manifest
     from pipeline.manifest import update_step as manifest_update_step
     from pipeline.paths import get_run_dir
@@ -610,6 +822,17 @@ async def approve_checkpoint(
     run_dir = get_run_dir(session_id)
     if run_dir.exists() and (run_dir / "manifest.json").exists():
         manifest_update_step(run_dir, checkpoint, "approved")
+
+    # Stamp artifact files as approved (audit trail; failures are non-fatal)
+    from pipeline.artifacts import stamp_approved
+
+    if checkpoint == "checkpoint_1":
+        stamp_approved(run_dir / "cv_data.json")
+        stamp_approved(run_dir / "tor_data.json")
+    elif checkpoint == "checkpoint_2":
+        stamp_approved(run_dir / "mapped_cv.json")
+    elif checkpoint == "checkpoint_3":
+        stamp_approved(run_dir / "generated_fields.json")
 
     # Schedule the next phase
     resume_from = CHECKPOINT_RESUME_MAP[checkpoint]
@@ -661,7 +884,7 @@ async def get_review(
         )
 
     try:
-        gf = __import__("json").loads(gf_path.read_text(encoding="utf-8"))
+        gf = json.loads(gf_path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -717,23 +940,19 @@ async def resolve_review(
             detail="generated_fields.json not found",
         )
 
-    # Apply dot-path overrides if provided
+    # Apply dot-path overrides if provided (same traversal as GET /review current_value).
     if payload.overrides:
         try:
             gf = _json.loads(gf_path.read_text(encoding="utf-8"))
-            generated = gf.get("generated", {})
+            generated = gf.get("generated") or {}
+            if not isinstance(generated, dict):
+                raise DotPathError("'generated' must be an object to apply overrides")
             for dot_path, value in payload.overrides.items():
-                parts = dot_path.split(".")
-                obj = generated
-                for part in parts[:-1]:
-                    obj = obj[int(part)] if part.isdigit() else obj[part]
-                last = parts[-1]
-                if last.isdigit():
-                    obj[int(last)] = value
-                else:
-                    obj[last] = value
+                set_by_dot_path(generated, dot_path, value)
             gf["generated"] = generated
             gf_path.write_text(_json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+        except DotPathError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -763,6 +982,70 @@ async def resolve_review(
         session_id=session_id,
         status="processing",
         message="Review resolved. Compressor starting.",
+    )
+
+
+# ── POST /sessions/{id}/field-edit ───────────────────────────────────────────
+
+
+@router.post("/{session_id}/field-edit", response_model=FieldEditResponse)
+async def submit_field_edits(
+    session_id: str,
+    payload: FieldEditRequest,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser,
+) -> FieldEditResponse:
+    """
+    Apply targeted natural-language edits to generated_fields["generated"] during
+    the field_editor_pending pause, then resume processing (field_editor → compressor).
+
+    Session must be in field_editor_pending status.
+    Each edit is { field_path, instruction }.  The field_editor agent processes them
+    sequentially (one LLM call per edit) so each subsequent edit operates on the
+    already-patched state.  Paths that cannot be resolved or that the agent skips
+    are returned in `skipped` — the pipeline continues regardless.
+
+    Wired and ready; requires pipeline/agents/field_editor.py to be implemented.
+    """
+    row = _require_owned_session(session_id, current_user.user_id)
+
+    if row["status"] != "field_editor_pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Session is not field_editor_pending (current status: {row['status']})",
+        )
+
+    from pipeline.agents import field_editor
+    from pipeline.paths import get_run_dir as _get_run_dir
+
+    run_dir = _get_run_dir(session_id)
+    edits = [{"field_path": e.field_path, "instruction": e.instruction} for e in payload.edits]
+
+    # Run the field_editor agent synchronously so applied/skipped can be
+    # returned in this HTTP response (per FIELD_EDITOR_CONTEXT.md §9).
+    try:
+        applied, skipped = field_editor.run(run_dir, edits)
+    except Exception as exc:
+        from api.services.database import set_failed as _set_failed
+        _set_failed(session_id, str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Field editor failed: {exc}",
+        ) from exc
+
+    # Transition DB to processing and schedule compressor as background task.
+    from api.services.database import set_processing as _set_processing
+    _set_processing(session_id)
+
+    from pipeline.orchestrator import run_phase3_after_field_editor
+    background_tasks.add_task(run_phase3_after_field_editor, session_id=session_id)
+
+    return FieldEditResponse(
+        session_id=session_id,
+        status="processing",
+        applied=applied,
+        skipped=skipped,
+        message="Field edits applied. Compressor starting.",
     )
 
 

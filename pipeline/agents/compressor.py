@@ -18,7 +18,7 @@ from anthropic import Anthropic
 
 from models import CVData
 from pipeline.manifest import update_step
-from pipeline.utils import strip_code_fences
+from pipeline.utils import resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
 
@@ -39,6 +39,7 @@ PROTECTED_FIELDS: frozenset[str] = frozenset(
         "world_bank_affiliation",
     }
 )
+
 
 SYSTEM_PROMPT = """
 You are the Compressor agent in a document processing pipeline. You receive
@@ -74,41 +75,98 @@ target, while preserving meaning, accuracy, and tone.
   set `applied` to false, return the CVData unchanged, and leave
   `fields_shortened` as [].
 
-## Compression rules
+## Compression instructions
+
+### Primary target — word count
+You will receive `target_words` in the input params. Reduce the total
+word count of all compressible content to at or below this target.
+Count words across all compressible fields only (see protected fields below).
+
+### Fallback — compression ratio
+If `target_words` is not provided or is 0, apply the `compression_ratio`
+from the input params instead.
+Example: compression_ratio = 0.80 means reduce total compressible word
+count to 80% of its current value.
+
+### How to compress — priorities
+Compress simultaneously across projects and generated_fields, prioritising
+the least impactful cuts first:
+
+Priority 1 — Remove redundancy
+  Remove repeated ideas, synonymous phrases, and restated conclusions.
+  Example: "Conducted analysis and performed analytical work" → "Conducted analysis"
+
+Priority 2 — Tighten verbose constructions
+  Replace wordy phrases with concise equivalents.
+  Examples:
+  - "in order to" → "to"
+  - "as a result of" → "due to"
+  - "a large number of" → "many"
+  - "with the aim of achieving" → "to achieve"
+
+Priority 3 — Trim supporting detail
+  Remove illustrative examples, parenthetical clarifications, and
+  elaborations that restate the main point.
+  Keep: the core claim, the action, the outcome.
+  Remove: "for example", "such as X and Y", "including but not limited to"
+
+Priority 4 — Shorten long project descriptions
+  If activities_performed or main_project_features exceed 60 words,
+  reduce to the single most impactful sentence or clause per activity.
+  Preserve all sector keywords from DistilledToR.sector_keywords.
+
+### Compression rules
 - Never remove a sector keyword from DistilledToR.sector_keywords.
 - Never change a date, number, proper noun, or country name.
 - Never merge two separate projects into one.
 - Never remove an entire GeneratedField item — shorten it instead.
 - Never alter meaning — compression must be loss of words, not loss of facts.
 - Maintain active voice and action verbs throughout.
-- Apply cuts proportionally across projects.
+- Apply cuts proportionally across projects — do not strip one project
+  bare while leaving others untouched.
 
 ## Protected fields — never compress
-personal_info, education, languages, countries_of_experience, certifications,
-membership_professional_bodies, present_position, proposed_position,
-category, employer, years_with_firm, world_bank_affiliation.
+The following fields must be returned exactly as received, character for
+character:
+- personal_info (all subfields)
+- education (all subfields)
+- languages (all subfields)
+- countries_of_experience (all subfields)
+- certifications
+- membership_professional_bodies
+- present_position
+- proposed_position
+- category
+- employer
+- years_with_firm
+- world_bank_affiliation
 
-## Compressible fields only
+## Compressible fields
+Only these fields are eligible for compression:
 - relevant_projects: activities_performed, main_project_features
+  (date_from, date_to, location, client, company, donor, positions_held,
+  project_name, duration, year are all protected within each project)
+- employment_record: description
+  (from_date, to_date, employer, positions_held, location, country are all
+  protected within each entry — only the narrative description is compressible)
 - generated_fields: content (for each GeneratedField item)
 - key_qualifications (extracted list on CVData)
 - other_relevant_info
 - other_skills (each item)
+- training (each item)
 - publications (each item)
 
-## Compression priority
-1. Remove redundancy
-2. Tighten verbose constructions
-3. Trim supporting detail
-4. Shorten long project descriptions (>60 words)
+## Word counting
+Count words as whitespace-delimited tokens across all compressible fields
+combined. Do not count protected fields. Report words_before and words_after
+in the compression block based on this definition.
 
 ## Inputs
 The user message will contain:
-  <cv_data>            — reviewed CVData from generated_fields.json   </cv_data>
-  <tor_data>           — DistilledToR (for sector_keywords reference) </tor_data>
-  <compression_params> — target_words, compression_ratio              </compression_params>
+  <cv_data>      — reviewed CVData from generated_fields.json        </cv_data>
+  <tor_data>     — DistilledToR (for sector_keywords reference)      </tor_data>
+  <compression_params> — target_words, compression_ratio             </compression_params>
 """
-
 
 def _count_compressible_words(cv_data: dict) -> int:
     """Count words across compressible fields only (mirrors the LLM's definition)."""
@@ -154,7 +212,8 @@ def run(
     gf_path = run_dir / "generated_fields.json"
     gf_raw = json.loads(gf_path.read_text(encoding="utf-8"))
     cv_data_in = gf_raw["generated"]
-    tor_data = json.loads((run_dir / "tor_data.json").read_text(encoding="utf-8"))["data"]
+    tor_raw = json.loads((run_dir / "tor_data.json").read_text(encoding="utf-8"))
+    tor_data = resolve_tor_for_agents(tor_raw, context="compressor.run")
 
     current_words = _count_compressible_words(cv_data_in)
     effective_target = target_words if target_words > 0 else int(current_words * compression_ratio)

@@ -21,6 +21,7 @@ from pipeline.utils import strip_code_fences
 
 client = Anthropic()
 
+
 SYSTEM_PROMPT = """
 You are the CV Extractor agent in a document processing pipeline. Your sole job
 is to read a CV document and extract its contents into a structured JSON object
@@ -46,14 +47,37 @@ that strictly conforms to the CVData schema.
 - Exception 2: derive `full_name` by joining `first_names` + `family_name`
   if a single full-name string is not explicitly present.
 
-### GIZ format — experience section
-- For GIZ, ALL work experience goes into `relevant_projects`. One entry per
-  project or assignment.
+### Experience section — format-specific rules
+
+The donor format is passed in the user message as <donor>. Apply the rules
+for the matching format below.
+
+#### GIZ
+- ALL work experience goes into `relevant_projects`. One entry per project
+  or assignment.
 - Leave `employment_record` as [] — it is a WB-only field.
 - If the CV lists a general job history table (employer + period, no project
   detail), map each entry to a RelevantProject with `company`, `date_from`,
   `date_to`, and `positions_held` populated, and leave project-specific fields
   (client, donor, main_project_features, activities_performed) as "".
+
+#### World Bank (donor = "world_bank")
+- Populate BOTH `employment_record` AND `relevant_projects`.
+- `employment_record`: one entry per employer or job role. Each entry captures
+  the institutional employment history — who the expert worked for, in what
+  role, and for how long. Fields to populate: `employer`, `positions_held`,
+  `from_date`, `to_date`, `country`. Leave `location` and `description` as ""
+  unless the CV provides them explicitly.
+- `relevant_projects`: one entry per discrete project or assignment, regardless
+  of employer. Fields to populate: `project_name`, `date_from`, `date_to`,
+  `location`, `client`, `company`, `main_project_features`,
+  `activities_performed`, `positions_held`. Leave `donor` as "" unless
+  explicitly stated in the CV.
+- `year` on each RelevantProject: derive as "YYYY" or "YYYY–YYYY" from
+  `date_from` and `date_to`. WB renderers use `year` rather than the
+  separate date fields.
+- It is normal for a single employer period to contain multiple projects —
+  extract all of them into `relevant_projects`.
 
 ### Date normalisation
 - Normalise ALL dates to "Month YYYY" format — e.g. "March 2019", "January 2005".
@@ -68,11 +92,11 @@ that strictly conforms to the CVData schema.
   Title Case.
 - Strip all leading/trailing whitespace from every string value.
 - Fix obvious typos only where the correction is unambiguous
-  (e.g. "Grmany" -> "Germany"). Do not rephrase, reword, or improve content.
+  (e.g. "Grmany" → "Germany"). Do not rephrase, reword, or improve content.
 
 ### Personal info
 - `title`: accept only Mr. / Mrs. / Dr. / Prof.
-  Normalise variants — e.g. "Professor" -> "Prof.", "Doctor" -> "Dr.".
+  Normalise variants — e.g. "Professor" → "Prof.", "Doctor" → "Dr.".
   If absent or unclear, leave as "".
 - `nationality_second`: populate only if the CV explicitly mentions dual
   nationality.
@@ -81,7 +105,7 @@ that strictly conforms to the CVData schema.
 ### Education
 - List entries in reverse chronological order (most recent first).
 - Use `date_obtained` only if the CV gives a single graduation or award year
-  rather than a start-end range.
+  rather than a start–end range.
 - Leave `major` as "" unless the CV lists it separately from the degree title.
 
 ### Language fields

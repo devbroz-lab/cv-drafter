@@ -18,7 +18,9 @@ STEP_ORDER defines the canonical execution sequence.  Each step has a status:
 from __future__ import annotations
 
 import json
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,12 +32,28 @@ STEP_ORDER: list[str] = [
     "checkpoint_2",
     "fields_generator",
     "content_reviewer",
+    "field_editor",
     "compressor",
     "checkpoint_3",
     "renderer",
 ]
 
 _TERMINAL_STATUSES = {"done", "failed", "blocked", "approved"}
+
+# Phase 1 runs cv_extractor and tor_summarizer in parallel; each does
+# read-modify-write on manifest.json — serialize per run_dir to avoid truncation races.
+_manifest_lock_registry: dict[str, threading.RLock] = {}
+_manifest_lock_registry_guard = threading.Lock()
+
+
+@contextmanager
+def manifest_lock(run_dir: Path):
+    """Serialize manifest I/O per run dir (parallel agents in phase 1)."""
+    key = str(run_dir.resolve())
+    with _manifest_lock_registry_guard:
+        lock = _manifest_lock_registry.setdefault(key, threading.RLock())
+    with lock:
+        yield
 
 
 def generate_run_id() -> str:
@@ -61,24 +79,28 @@ def create_manifest(
         "params": params,
         "steps": [{"name": s, "status": "waiting", "completed_at": None} for s in STEP_ORDER],
     }
-    _write(run_dir, manifest)
+    with manifest_lock(run_dir):
+        _write(run_dir, manifest)
 
 
 def load_manifest(run_dir: Path) -> dict:
     """Read and parse manifest.json from *run_dir*."""
-    return json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    path = run_dir / "manifest.json"
+    with manifest_lock(run_dir):
+        return json.loads(path.read_text(encoding="utf-8"))
 
 
 def update_step(run_dir: Path, step_name: str, status: str) -> None:
     """Set *step_name* status in the manifest, recording a timestamp for terminal statuses."""
-    manifest = load_manifest(run_dir)
-    for step in manifest["steps"]:
-        if step["name"] == step_name:
-            step["status"] = status
-            if status in _TERMINAL_STATUSES:
-                step["completed_at"] = datetime.now(UTC).isoformat()
-            break
-    _write(run_dir, manifest)
+    with manifest_lock(run_dir):
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        for step in manifest["steps"]:
+            if step["name"] == step_name:
+                step["status"] = status
+                if status in _TERMINAL_STATUSES:
+                    step["completed_at"] = datetime.now(UTC).isoformat()
+                break
+        _write(run_dir, manifest)
 
 
 def get_step_status(run_dir: Path, step_name: str) -> str:

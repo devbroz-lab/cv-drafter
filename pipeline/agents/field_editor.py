@@ -1,0 +1,375 @@
+"""
+Agent 7 — Field Editor.
+
+Applies targeted, user-directed natural-language edits to specific fields in
+generated_fields.json["generated"] before the compressor runs.
+
+Pipeline entry point
+--------------------
+    from pipeline.agents import field_editor
+    applied, skipped = field_editor.run(run_dir, edits)
+
+Parameters
+----------
+run_dir : Path
+    Session run directory (runs/{session_id}/).
+edits : list[dict]
+    Each item: {"field_path": str, "instruction": str}. Max 5 items.
+    Paths are relative to generated_fields["generated"].
+    Both bracket (key_qualifications[2]) and dot (key_qualifications.2)
+    notations are supported and normalised internally.
+
+Returns
+-------
+applied : list[str]
+    Field paths where the edit was successfully written.
+skipped : list[str]
+    Field paths that were skipped (path resolution failure, agent SKIP,
+    or API error). Pipeline continues regardless.
+
+All agent logic, prompts, path utilities, model choice, and assistant prefill
+are exactly as authored by Dev 2 in field_editor_agent.py.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+
+from anthropic import Anthropic
+
+from pipeline.manifest import update_step
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model — Dev 2's choice: Sonnet for editing quality
+# ---------------------------------------------------------------------------
+
+MODEL = "claude-sonnet-4-20250514"
+
+# ---------------------------------------------------------------------------
+# PATH UTILITIES
+# Copied verbatim from field_editor_agent.py by Dev 2.
+# Handles both bracket notation (key_qualifications[2]) and dot notation.
+# ---------------------------------------------------------------------------
+
+
+def _normalise_path(field_path: str) -> list[str | int]:
+    """
+    Convert a mixed bracket/dot path string into a list of keys/indices.
+
+    Examples
+    --------
+    "key_qualifications[2]"         → ["key_qualifications", 2]
+    "relevant_projects[1].location" → ["relevant_projects", 1, "location"]
+    "personal_info.first_names"     → ["personal_info", "first_names"]
+    """
+    # Replace [N] bracket notation with .N so we can split uniformly
+    normalised = re.sub(r"\[(\d+)\]", r".\1", field_path)
+    parts = []
+    for part in normalised.split("."):
+        part = part.strip()
+        if not part:
+            continue
+        parts.append(int(part) if part.isdigit() else part)
+    return parts
+
+
+def get_by_path(data: dict, field_path: str):
+    """Return the value at field_path inside data, or raise KeyError/IndexError."""
+    parts = _normalise_path(field_path)
+    node = data
+    for part in parts:
+        if isinstance(node, list):
+            if not isinstance(part, int):
+                raise KeyError(f"Expected integer index, got '{part}'")
+            node = node[part]
+        elif isinstance(node, dict):
+            node = node[str(part)]
+        else:
+            raise KeyError(f"Cannot descend into {type(node).__name__} at '{part}'")
+    return node
+
+
+def set_by_path(data: dict, field_path: str, new_value) -> None:
+    """Write new_value at field_path inside data (in-place)."""
+    parts = _normalise_path(field_path)
+    node = data
+    for part in parts[:-1]:
+        if isinstance(node, list):
+            node = node[part]
+        elif isinstance(node, dict):
+            node = node[str(part)]
+        else:
+            raise KeyError(f"Cannot descend into {type(node).__name__} at '{part}'")
+
+    last = parts[-1]
+    if isinstance(node, list):
+        node[last] = new_value
+    else:
+        node[str(last)] = new_value
+
+
+# ---------------------------------------------------------------------------
+# PROMPT — copied verbatim from field_editor_agent.py by Dev 2
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are a precise copy-editor working on professional CVs formatted for \
+international development donors (GIZ, World Bank).
+
+Your job is to apply a single targeted edit to one CV field value and return \
+a JSON object — nothing else.
+
+RESPONSE FORMAT
+---------------
+You must always respond with exactly one of these two JSON shapes:
+
+  {"action": "apply", "value": "<edited field value as a plain string>"}
+  {"action": "skip",  "reason": "<one sentence explaining why>"}
+
+RULES
+-----
+- "action" must be exactly the string "apply" or "skip". No other values.
+- When action is "apply", "value" must be a plain string containing only the \
+new field text. No markdown, no extra quotes, no explanation.
+- When action is "skip", "reason" must be a plain string of one sentence.
+- Use "skip" only when the instruction would require fabricating facts not \
+present in the original value. Stylistic rewrites (conciseness, active voice, \
+rephrasing) always use "apply".
+- Preserve all factual content of the original unless the instruction \
+explicitly asks you to change a fact.
+- Do not add commentary before or after the JSON object.\
+"""
+
+
+def build_user_prompt(field_path: str, current_value: str, instruction: str) -> str:
+    return (
+        f"Field path: {field_path}\n\n"
+        f"Current value:\n\"\"\"\n{current_value}\n\"\"\"\n\n"
+        f"Edit instruction: {instruction}"
+    )
+
+
+# The prefill string locks the opening of Claude's response to a JSON object,
+# making it structurally impossible for Claude to write preamble text before it.
+ASSISTANT_PREFILL = '{"action": "'
+
+# ---------------------------------------------------------------------------
+# CLAUDE CALL — copied verbatim from field_editor_agent.py by Dev 2
+# ---------------------------------------------------------------------------
+
+
+def call_claude(
+    client: Anthropic,
+    field_path: str,
+    current_value: str,
+    instruction: str,
+) -> dict:
+    """
+    Call Claude for a single field edit using JSON schema + assistant prefill.
+
+    Returns a parsed dict with one of these shapes:
+      {"action": "apply", "value": str}
+      {"action": "skip",  "reason": str}
+
+    Raises ValueError if the response cannot be parsed into either shape.
+    """
+    raw = client.messages.create(
+        model=MODEL,
+        max_tokens=1000,
+        system=SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": build_user_prompt(field_path, str(current_value), instruction),
+            },
+            # Prefill: forces the response to begin with '{"action": "'
+            # Claude continues from this exact string, so it cannot deviate
+            # from the JSON object format.
+            {
+                "role": "assistant",
+                "content": ASSISTANT_PREFILL,
+            },
+        ],
+    )
+
+    # Reassemble: Claude's continuation is appended to our prefill
+    continuation = raw.content[0].text
+    full_response = ASSISTANT_PREFILL + continuation
+
+    # Parse and validate
+    try:
+        parsed = json.loads(full_response)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Response was not valid JSON: {exc}\nRaw: {full_response!r}"
+        ) from exc
+
+    action = parsed.get("action")
+    if action == "apply":
+        if not isinstance(parsed.get("value"), str):
+            raise ValueError(f"'apply' response missing string 'value'. Got: {parsed}")
+    elif action == "skip":
+        if not isinstance(parsed.get("reason"), str):
+            raise ValueError(f"'skip' response missing string 'reason'. Got: {parsed}")
+    else:
+        raise ValueError(f"Unknown action '{action}'. Full response: {parsed}")
+
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# MAIN AGENT LOGIC — copied verbatim from field_editor_agent.py by Dev 2
+# ---------------------------------------------------------------------------
+
+
+def run_field_editor(
+    generated: dict,
+    review: dict | None,
+    edits: list[dict],
+    client: Anthropic,
+) -> tuple[dict, list[str], list[str]]:
+    """
+    Apply edits sequentially to a deep copy of `generated`.
+
+    Parameters
+    ----------
+    generated : dict
+        The ["generated"] subtree of generated_fields.json.
+    review : dict | None
+        The ["review"] subtree (passed to agent as context in full pipeline;
+        logged here for awareness but not sent to Claude in the silo).
+    edits : list[dict]
+        Each item: {"field_path": str, "instruction": str}
+
+    Returns
+    -------
+    mutated : dict
+        The edited copy of `generated`.
+    applied : list[str]
+        Field paths where the edit was successfully written.
+    skipped : list[str]
+        Field paths that were skipped (with reason logged).
+    """
+    import copy
+    mutated = copy.deepcopy(generated)
+    applied: list[str] = []
+    skipped: list[str] = []
+
+    for i, edit in enumerate(edits, start=1):
+        field_path  = edit["field_path"]
+        instruction = edit["instruction"]
+
+        log.debug("[Edit %d/%d] path='%s'", i, len(edits), field_path)
+        log.debug("  instruction: %s", instruction)
+
+        # --- Resolve current value ---
+        try:
+            current_value = get_by_path(mutated, field_path)
+        except (KeyError, IndexError, TypeError) as exc:
+            reason = f"path resolution failed: {exc}"
+            log.warning("  SKIPPED — %s", reason)
+            skipped.append(field_path)
+            continue
+
+        # Guard: only edit scalar values
+        if isinstance(current_value, list | dict):
+            reason = (
+                f"resolved value is {type(current_value).__name__}, not a scalar. "
+                "Use a more specific path (e.g. list[N]) to target a scalar element."
+            )
+            log.warning("  SKIPPED — %s", reason)
+            skipped.append(field_path)
+            continue
+
+        log.debug("  current value: %s", str(current_value)[:120])
+
+        # --- Call Claude ---
+        try:
+            result = call_claude(client, field_path, current_value, instruction)
+        except Exception as exc:
+            log.warning("  API / parse error for '%s': %s", field_path, exc)
+            skipped.append(field_path)
+            continue
+
+        # --- Dispatch on action ---
+        if result["action"] == "skip":
+            log.info("  SKIPPED (agent) — %s", result["reason"])
+            skipped.append(field_path)
+            continue
+
+        new_value = result["value"]
+
+        # --- Write back ---
+        try:
+            set_by_path(mutated, field_path, new_value)
+        except (KeyError, IndexError, TypeError) as exc:
+            log.warning("  Write-back failed for '%s': %s", field_path, exc)
+            skipped.append(field_path)
+            continue
+
+        log.info("  applied '%s' → %s", field_path, new_value[:120])
+        applied.append(field_path)
+
+    return mutated, applied, skipped
+
+
+# ---------------------------------------------------------------------------
+# Pipeline entry point
+# ---------------------------------------------------------------------------
+
+
+def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
+    """
+    Pipeline entry point called by the orchestrator / HTTP handler.
+
+    Reads generated_fields.json, applies edits via run_field_editor(),
+    writes the mutated generated dict back (preserving all top-level keys),
+    updates the manifest step, and returns (applied, skipped).
+
+    The caller is responsible for transitioning the DB session status.
+    """
+    update_step(run_dir, "field_editor", "running")
+
+    gf_path = run_dir / "generated_fields.json"
+    if not gf_path.exists():
+        update_step(run_dir, "field_editor", "failed")
+        raise FileNotFoundError(
+            f"generated_fields.json not found in {run_dir}. "
+            "Has the pipeline completed through Phase 3 (fields_generator + content_reviewer)?"
+        )
+
+    gf = json.loads(gf_path.read_text(encoding="utf-8"))
+    generated = gf.get("generated")
+    if not generated:
+        update_step(run_dir, "field_editor", "failed")
+        raise ValueError(
+            "generated_fields.json has no 'generated' key. "
+            "Has Agent 4 (Fields Generator) completed?"
+        )
+    review = gf.get("review")
+
+    client = Anthropic()  # reads ANTHROPIC_API_KEY from environment
+
+    try:
+        mutated, applied, skipped = run_field_editor(generated, review, edits, client)
+    except Exception:
+        update_step(run_dir, "field_editor", "failed")
+        raise
+
+    # Write back — preserve all top-level keys, only replace "generated"
+    gf["generated"] = mutated
+    gf_path.write_text(json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    update_step(run_dir, "field_editor", "done")
+    log.info(
+        "field_editor complete — applied=%s skipped=%s run_dir=%s",
+        applied,
+        skipped,
+        run_dir,
+    )
+    return applied, skipped

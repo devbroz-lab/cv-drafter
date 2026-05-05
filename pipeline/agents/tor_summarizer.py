@@ -22,31 +22,42 @@ from pipeline.utils import strip_code_fences
 client = Anthropic()
 
 SYSTEM_PROMPT = """
-You are the ToR Summarizer agent in a document processing pipeline. Your sole
-job is to read a Terms of Reference (ToR) document and extract its contents
-into a structured JSON object that strictly conforms to the DistilledToR schema.
+You are the ToR Summarizer agent in a document processing pipeline. Your job
+is to read a Terms of Reference (ToR) document and extract **every distinct
+expert role / expert pool** it describes into a JSON array of DistilledToR
+objects, each strictly conforming to the schema shown below.
 
 ## Output rules
-- Respond with a single JSON object and nothing else.
+- Respond with a single top-level JSON object: { "pools": [ <DistilledToR>, ... ] }
 - No preamble, no explanation, no markdown fences.
-- The JSON must be a valid, complete DistilledToR object.
-- Every field defined in the schema must be present.
+- Each element of "pools" must be a valid, complete DistilledToR object.
+- Every field defined in the schema must be present in each pool object.
 - All string fields default to "" if not found.
 - All list fields default to [] if not found.
 - `page_limit_stated` defaults to null if not found.
 - Never use null for any field except `page_limit_stated`.
+- If only one expert role exists in the ToR, "pools" still has exactly one element.
 
-## Extraction rules
+## How to identify expert pools / roles
+- Look for numbered or labelled position listings (e.g. "Expert 1", "Expert 2",
+  "Team Leader", "National Consultant", "Pool A / Pool B").
+- Look for section headings that name distinct roles, tables of required experts,
+  or repeated "Scope of Work" blocks with different titles.
+- If the same role appears multiple times (e.g. "Senior Engineer ×2"),
+  produce **one** pool entry for that role — not two.
+- Fields that are shared across all roles (e.g. language requirements, country
+  context) should be duplicated into each pool object; do not omit them just
+  because they are not role-specific.
+
+## Extraction rules (apply to every pool individually)
 
 ### Strictness
-- Extract only what is explicitly present in the ToR text.
+- Extract only what is explicitly present in the ToR text for that role.
 - Do not infer, assume, or generate content.
-- If a field is not stated, leave it as "" or [].
+- If a field is not stated for a specific role, leave it as "" or [].
 
 ### position_title
 - Extract the exact title of the expert role being filled.
-- If multiple positions are described in the ToR, extract only the one
-  that is most prominently featured or listed first.
 - Do not paraphrase — copy the title verbatim, then apply Title Case
   normalisation.
 
@@ -54,55 +65,55 @@ into a structured JSON object that strictly conforms to the DistilledToR schema.
 - Extract the primary sector as a single short noun phrase.
 - Examples: "Renewable Energy", "Urban Water Supply", "Public Financial
   Management", "Transport Infrastructure".
-- If the ToR spans multiple sectors, pick the dominant one.
+- If the role spans multiple sectors, pick the dominant one.
 
 ### key_tasks
-- Extract actual task statements — concrete actions the expert must perform.
+- Extract actual task statements for THIS role — concrete actions the expert
+  must perform.
 - Each item must be a full, standalone sentence or clause.
 - Do NOT extract section headings, role titles, or general scope descriptions.
 - Good example: "Develop a training curriculum for 50 local grid engineers
   covering SCADA operation and fault diagnosis."
 - Bad example: "Scope of Work" / "Technical Assistance" / "Advisory Services"
-- If the ToR contains a numbered task list, extract each item as a separate
-  string. If tasks are embedded in prose, decompose them into discrete items.
+- If tasks are in a numbered list, extract each as a separate string. If tasks
+  are in prose, decompose them into discrete items.
 
 ### required_qualifications
 - Extract academic degrees, certifications, and professional credentials
-  explicitly listed as required or mandatory.
+  explicitly listed as required or mandatory for THIS role.
 - One string per qualification.
 
 ### required_competencies vs preferred_competencies
-- `required_competencies`: only items the ToR marks as required, mandatory,
-  essential, or must-have.
-- `preferred_competencies`: only items the ToR marks as preferred, desirable,
+- `required_competencies`: only items marked as required, mandatory, essential,
+  or must-have for this role.
+- `preferred_competencies`: only items marked as preferred, desirable,
   advantageous, or an asset.
 - If the ToR does not distinguish, put all competencies in
   `required_competencies` and leave `preferred_competencies` as [].
 
 ### sector_keywords
-- Extract domain-specific technical terms, acronyms, and jargon that a
-  screener would look for in a CV.
+- Extract domain-specific technical terms, acronyms, and jargon a screener
+  would look for in a CV for THIS role.
 - Do NOT include generic terms like "project management", "communication".
 
 ### language_requirements
-- Extract only explicit language requirements.
-- Format each as: "Language — Level" where level is as stated in the ToR.
+- Extract only explicit language requirements (may be shared across roles).
+- Format each as: "Language — Level" as stated in the ToR.
 
 ### country_experience_required
 - Extract only countries or regions explicitly named as required or preferred
-  experience locations.
+  experience for this role.
 
 ### page_limit_stated
-- Search the entire ToR for any clause that restricts the length of submitted CVs.
-- If found: set `page_limit_stated` to the integer page number only.
-- If not found: set `page_limit_stated` to null.
+- Search the entire ToR for any clause restricting CV length.
+- If found: integer page number only.
+- If not found: null.
 
 ### page_limit_source
-- If `page_limit_stated` is not null, copy the verbatim clause from the ToR
-  that states the page limit.
-- If `page_limit_stated` is null, leave `page_limit_source` as "".
+- If `page_limit_stated` is not null, copy the verbatim clause from the ToR.
+- If null, leave as "".
 
-## Schema
+## Schema (applies to every element in "pools")
 {{ DistilledToR.model_json_schema() }}
 """
 
@@ -130,12 +141,13 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     update_step(run_dir, "tor_summarizer", "running")
 
     content = (
-        "Extract the ToR below into a DistilledToR JSON object.\n\n" f"<tor>\n{tor_text}\n</tor>"
+        "Extract the ToR below into a DistilledToR pools JSON object.\n\n"
+        f"<tor>\n{tor_text}\n</tor>"
         if tor_text.strip()
         else (
             "No Terms of Reference document was provided for this session. "
-            "Return a minimal DistilledToR JSON object with all fields at their "
-            "default empty values (strings as '', lists as [], "
+            "Return a JSON object with a single minimal DistilledToR in `pools`, "
+            "with all fields at their default empty values (strings as '', lists as [], "
             "page_limit_stated as null)."
         )
     )
@@ -157,7 +169,11 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     raw = strip_code_fences(response.content[0].text.strip())
 
     try:
-        parsed = DistilledToR.model_validate_json(raw)
+        parsed = json.loads(raw)
+        pools_raw = parsed.get("pools")
+        if not isinstance(pools_raw, list) or len(pools_raw) == 0:
+            raise ValueError("`pools` must be a non-empty list")
+        pools = [DistilledToR.model_validate(pool) for pool in pools_raw]
     except Exception as exc:
         update_step(run_dir, "tor_summarizer", "failed")
         raise ValueError(
@@ -167,7 +183,8 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     output = {
         "approved": False,
         "approved_at": None,
-        "data": parsed.model_dump(),
+        "pools": [pool.model_dump() for pool in pools],
+        "selected_pool_index": 0,
     }
     (run_dir / "tor_data.json").write_text(
         json.dumps(output, indent=2, ensure_ascii=False),
@@ -175,4 +192,4 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     )
 
     update_step(run_dir, "tor_summarizer", "done")
-    return parsed
+    return pools[0]

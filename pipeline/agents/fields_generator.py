@@ -17,9 +17,10 @@ from anthropic import Anthropic
 
 from models import FORMAT_PROFILES, CVData
 from pipeline.manifest import update_step
-from pipeline.utils import strip_code_fences
+from pipeline.utils import resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
+
 
 SYSTEM_PROMPT = """
 You are the Fields Generator agent in a document processing pipeline. You
@@ -55,13 +56,18 @@ grounded in evidence from the CV — you are a skilled writer, not an inventor.
 - If empty, derive from the most recent RelevantProject.positions_held.
 - If already populated, leave unchanged.
 
+### key_qualifications (extracted field on CVData)
+- If empty and no generated version will be produced (which should not happen
+  for GIZ), leave as [].
+- If already populated from extraction, leave unchanged — do not overwrite.
+
 ### relevant_projects — empty subfields only
 For each RelevantProject, fill only fields that are empty string "":
 - `duration`: calculate from date_from and date_to if both are present.
   Format as "N months" or "N years" rounded to nearest whole unit.
   If either date is missing or "Present", leave as "".
-- `year`: derive as "YYYY" or "YYYY-YYYY" from date_from and date_to.
-  Leave as "" if dates are missing.
+- `year`: derive as "YYYY" or "YYYY–YYYY" from date_from and date_to.
+  Used by some renderers. Leave as "" if dates are missing.
 - All other project fields: never fill — if empty, leave empty.
 
 ### All other CVData fields
@@ -76,22 +82,29 @@ GeneratedField items to CVData.generated_fields.
 
 ### GIZ: field_key = "key_qualifications"
 
-Generate tailored qualification bullets for this specific assignment.
+Generate a set of tailored qualification bullets for this specific assignment.
 Each bullet becomes one GeneratedField with field_key="key_qualifications".
 
-#### How many bullets
+#### How many bullets to generate
+- Read the proposed_position and the ToR's key_tasks and required_competencies.
+- Generate one bullet per major competency cluster the ToR requires.
 - Minimum 3 bullets, maximum 6 bullets.
-- One bullet per major competency cluster the ToR requires.
+- Do not pad — if only 3 clusters are clearly required, write 3 strong bullets,
+  not 5 weak ones.
 
 #### What each bullet must do
-- Address a specific requirement from the ToR.
-- Be grounded in the expert's actual experience.
+- Address a specific requirement from the ToR (key_tasks, required_competencies,
+  or sector_keywords).
+- Be grounded in the expert's actual experience — synthesise across multiple
+  projects if needed, but never claim experience that has no basis in the CV.
 - Lead with an action verb.
 - Be one sentence, maximum 25 words.
-- Contain at least one sector keyword from DistilledToR.sector_keywords where applicable.
+- Contain at least one sector keyword from DistilledToR.sector_keywords where
+  naturally applicable.
 
 #### source field for each GeneratedField
-- "tor"        — bullet addresses a ToR requirement with no direct CV evidence (use sparingly)
+- "tor"        — bullet addresses a ToR requirement with no direct CV evidence
+                 (use sparingly — flag in warnings if more than 1 such bullet)
 - "experience" — bullet is grounded in one or more CV projects or qualifications
 - "generated"  — bullet synthesises both ToR requirement and CV evidence
 
@@ -100,12 +113,63 @@ Each bullet becomes one GeneratedField with field_key="key_qualifications".
 - Place geography-specific bullets last.
 
 #### Warnings
-If any of the following apply, append a warning string to generation_warnings:
-- More than 1 bullet has source="tor"
+If any of the following apply, append a warning string to the output's
+`generation_warnings` list:
+- More than 1 bullet has source="tor" (weak CV grounding)
 - A required_competency from the ToR could not be addressed by any CV evidence
 - The expert's CV contains no projects matching the ToR's geography
 
+### World Bank: field_key = "detailed_tasks"
+
+Generate a set of forward-looking task statements describing what the expert
+will do on this specific assignment. Each task becomes one GeneratedField
+with field_key="detailed_tasks".
+
+These are NOT qualification bullets. They describe future responsibilities,
+not past experience. They are written as if addressed to the expert
+("You will..." implied, but no pronouns used).
+
+#### How many tasks to generate
+- Derive directly from DistilledToR.key_tasks — one GeneratedField per
+  distinct task cluster.
+- Minimum 3, maximum 8.
+- Do not invent tasks that are not grounded in the ToR.
+
+#### What each task statement must do
+- Correspond to a specific item in key_tasks or a clearly implied
+  sub-task of one.
+- Be concrete and outcome-oriented — state what will be produced or
+  delivered, not just what will be done.
+- Lead with an action verb.
+- Be one sentence, maximum 30 words.
+- Include at least one sector keyword from DistilledToR.sector_keywords
+  where naturally applicable.
+- Good: "Develop a capacity-building curriculum for 40 ministry staff
+  covering ESMAP methodologies and renewable energy planning tools."
+- Bad: "Support training activities related to energy."
+
+#### source field for each GeneratedField
+- "tor"        — task is stated directly in the ToR key_tasks
+- "generated"  — task is inferred from ToR context and expert background
+
+#### Ordering
+- Order tasks to match the logical sequence of the assignment
+  (scoping → analysis → delivery → reporting).
+
+#### Warnings
+If any of the following apply, append a warning string to the output's
+`generation_warnings` list:
+- A key_task from the ToR could not be mapped to any expert competency
+  or past project
+- The expert has no prior project in the ToR's stated geography
+
 ## Output structure
+Return the full CVData object with:
+- `generated_fields` populated with all GeneratedField items produced
+- `present_position` and project subfields filled where applicable
+- A top-level `generation_warnings` list (may be empty)
+
+The output JSON must have this shape:
 {
   "data": { ...full CVData object... },
   "generation_warnings": []
@@ -118,7 +182,6 @@ The user message will contain:
   <format_profile>— FormatProfile for this run's donor format    </format_profile>
   <params>        — pipeline params (proposed_position, etc.)    </params>
 """
-
 
 def run(run_dir: Path) -> CVData:
     """
@@ -134,7 +197,7 @@ def run(run_dir: Path) -> CVData:
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
     cv_data = mapped_raw["data"]
-    tor_data = tor_raw["data"]
+    tor_data = resolve_tor_for_agents(tor_raw, context="fields_generator.run")
     params = manifest["params"]
 
     raw_donor = params.get("donor", "giz")

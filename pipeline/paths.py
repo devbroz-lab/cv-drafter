@@ -27,6 +27,10 @@ WB_TEMPLATE_PATH: Path = TEMPLATE_ROOT / "WB-Template.docx"
 WB_DYNAMIC_TEMPLATE_NAME = "WB-Template.dynamic.docx"
 WB_DYNAMIC_UNPACK_DIR_NAME = "_wb_template_unpacked"
 
+# Preview docx — written after content_reviewer, before field_editor_pending.
+# Local-only: never uploaded to Supabase Storage.
+PREVIEW_DOCX_NAME = "preview.docx"
+
 # run_id / session_id validation — letters, digits, hyphens, underscores only
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
@@ -82,3 +86,8 @@ def get_wb_dynamic_template_path(run_id: str) -> Path:
 def get_wb_dynamic_unpack_dir(run_id: str) -> Path:
     """Return the run-scoped unpack directory used for WB dynamic template build."""
     return resolve_under(get_run_dir(run_id), WB_DYNAMIC_UNPACK_DIR_NAME)
+
+
+def get_preview_docx_path(run_id: str) -> Path:
+    """Return the run-scoped preview.docx path (local-only, never uploaded to Storage)."""
+    return resolve_under(get_run_dir(run_id), PREVIEW_DOCX_NAME)

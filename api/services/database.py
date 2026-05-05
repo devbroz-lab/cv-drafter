@@ -34,7 +34,6 @@ def create_session_row(
     target_format: str,
     source_filename: str,
     tor_filename: str | None = None,
-    proposed_position: str | None = None,
     category: str | None = None,
     employer: str | None = None,
     years_with_firm: str | None = None,
@@ -42,6 +41,9 @@ def create_session_row(
     job_description: str | None = None,
     recruiter_comments: str | None = None,
 ) -> dict[str, Any]:
+    # proposed_position is intentionally absent here — it is derived from the
+    # selected ToR pool's position_title at checkpoint_1 (POST /tor/select-pool)
+    # and written to the DB row at that point.
     payload: dict[str, Any] = {
         "user_id": user_id,
         "target_format": target_format,
@@ -51,8 +53,6 @@ def create_session_row(
     }
     if tor_filename:
         payload["tor_filename"] = tor_filename
-    if proposed_position:
-        payload["proposed_position"] = proposed_position
     if category:
         payload["category"] = category
     if employer:
@@ -167,6 +167,7 @@ def count_active_sessions(user_id: str) -> int:
         "checkpoint_1_pending",
         "checkpoint_2_pending",
         "reviewer_blocked",
+        "field_editor_pending",
         "checkpoint_3_pending",
     ]
     result = (
@@ -197,22 +198,31 @@ def set_reviewer_blocked(session_id: str) -> None:
     update_session_row(session_id, status="reviewer_blocked")
 
 
+def set_field_editor_pending(session_id: str) -> None:
+    """
+    Transition a session to field_editor_pending.
+    Called after the preview render completes, before the field_editor agent runs.
+    """
+    update_session_row(session_id, status="field_editor_pending")
+
+
 def reset_stale_processing_sessions() -> int:
     """
-    On server startup, find all sessions stuck in a mid-flight state and mark
-    them 'failed'.  Prevents ghost sessions after a crash or redeploy.
+    On server startup, find sessions stuck in *processing* and mark them failed.
 
-    Resets: processing, checkpoint_N_pending, reviewer_blocked.
-    Does NOT reset: queued (user intent), completed, failed (already terminal).
+    A checkpoint_*_pending or reviewer_blocked session is intentionally idle
+    waiting for a human — restarting the API must not destroy that work.
+
+    Only *processing* means a background task may have been cut off mid-flight
+    (reload, crash, deploy), which would otherwise leave a permanent ghost run.
+
+    Does NOT reset: queued, checkpoint_*_pending, reviewer_blocked, completed, failed.
 
     Returns the number of sessions reset.
     """
     stale_statuses = [
         "processing",
-        "checkpoint_1_pending",
-        "checkpoint_2_pending",
-        "reviewer_blocked",
-        "checkpoint_3_pending",
+        "field_editor_pending",
     ]
     total = 0
     for stale_status in stale_statuses:

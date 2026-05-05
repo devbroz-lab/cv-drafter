@@ -12,6 +12,7 @@ SessionStatus = Literal[
     "checkpoint_1_pending",
     "checkpoint_2_pending",
     "reviewer_blocked",
+    "field_editor_pending",
     "checkpoint_3_pending",
     "completed",
     "failed",
@@ -24,6 +25,7 @@ ACTIVE_STATUSES: tuple[str, ...] = (
     "checkpoint_1_pending",
     "checkpoint_2_pending",
     "reviewer_blocked",
+    "field_editor_pending",
     "checkpoint_3_pending",
 )
 
@@ -52,7 +54,8 @@ class SessionCreateRequest(BaseModel):
     source_filename: str = Field(min_length=1)
     tor_filename: str | None = None
     # Pipeline identity params — written to the session row and passed to agents
-    proposed_position: str | None = Field(default=None, description="Proposed position title")
+    # proposed_position is NOT set at session creation; it is derived from the selected
+    # ToR pool's position_title at checkpoint_1 (POST /tor/select-pool).
     category: str | None = Field(default=None, description="Expert category (e.g. Senior Expert)")
     employer: str | None = Field(default=None, description="Employer / consulting firm name")
     years_with_firm: str | None = Field(default=None, description="Years with the firm")
@@ -60,6 +63,14 @@ class SessionCreateRequest(BaseModel):
     page_limit: int | None = Field(default=None, ge=1, le=100)
     job_description: str | None = None
     recruiter_comments: str | None = None
+    # Compression overrides — stored in manifest.params (not in DB).
+    # When omitted, FORMAT_PROFILES[donor] defaults are used.
+    target_words: int | None = Field(
+        default=None, ge=0, description="Hard word-count cap for compressor (0 = use ratio)"
+    )
+    compression_ratio: float | None = Field(
+        default=None, gt=0, le=1, description="Compressor fallback ratio when target_words is 0"
+    )
 
 
 class SessionCreateResponse(BaseModel):
@@ -188,6 +199,55 @@ class ManifestResponse(BaseModel):
     steps: list[ManifestStepResponse]
     checkpoint_pending: str | None = None  # e.g. "checkpoint_1" if pending
     reviewer_blocked: bool = False
+
+
+# ── ToR pool selection ────────────────────────────────────────────────────────
+
+
+class TorPoolSelectionRequest(BaseModel):
+    selected_pool_index: int = Field(ge=0, description="Index into tor_data.pools")
+
+
+class TorPoolSelectionResponse(BaseModel):
+    session_id: str
+    selected_pool_index: int
+    pool_count: int
+    position_title: str | None = None
+    message: str
+
+
+class TorPoolsResponse(BaseModel):
+    session_id: str
+    pools: list[dict[str, Any]]
+    selected_pool_index: int | None = None
+
+
+# ── Field editor ──────────────────────────────────────────────────────────────
+
+
+class FieldEditItem(BaseModel):
+    field_path: str = Field(
+        min_length=1, description="Dot-path relative to generated_fields['generated']"
+    )
+    instruction: str = Field(
+        min_length=1, description="Natural language instruction for the edit agent"
+    )
+
+
+class FieldEditRequest(BaseModel):
+    edits: list[FieldEditItem] = Field(
+        min_length=1,
+        max_length=5,
+        description="1–5 targeted field edits to apply before compression",
+    )
+
+
+class FieldEditResponse(BaseModel):
+    session_id: str
+    status: SessionStatus
+    applied: list[str]
+    skipped: list[str]
+    message: str
 
 
 # ── Pipeline output data ──────────────────────────────────────────────────────

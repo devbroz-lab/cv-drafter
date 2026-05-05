@@ -18,12 +18,14 @@ from anthropic import Anthropic
 
 from models import CVData
 from pipeline.manifest import update_step
-from pipeline.utils import strip_code_fences
+from pipeline.utils import resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
 
 # Minimum number of projects guaranteed to survive filtering regardless of score.
 MIN_PROJECTS_TO_KEEP: int = 2
+
+
 
 SYSTEM_PROMPT = """
 You are the CV to ToR Mapper agent in a document processing pipeline. You
@@ -61,24 +63,74 @@ alignment report.
 
 ### What to score
 - Score every RelevantProject entry in the CVData.
-- Do NOT score Education, Languages, or CountryExperience — those are always kept.
+- Do NOT score Education, Languages, or CountryExperience — those are always
+  kept in full.
 
 ### How to score
-Assign each project a relevance_score between 0.0 and 1.0:
+Assign each project a relevance_score between 0.0 and 1.0 based on how well
+it matches the DistilledToR across four dimensions. Weight them as follows:
+
   1. Sector keywords match     — 35%
+     How many of DistilledToR.sector_keywords appear in the project's
+     main_project_features, activities_performed, and positions_held fields.
+
   2. Key tasks match           — 30%
+     How closely the project's activities_performed aligns with
+     DistilledToR.key_tasks. Partial matches count — look for semantic
+     overlap, not just exact string matches.
+
   3. Competencies match        — 20%
+     How many required_competencies and preferred_competencies are evidenced
+     by the project's positions_held and activities_performed.
+     Weight required_competencies twice as heavily as preferred.
+
   4. Geography match           — 15%
+     Whether the project's location matches DistilledToR.geography or
+     DistilledToR.country_experience_required.
+     Exact country match = full weight. Same region = half weight.
+     No match = zero for this dimension.
 
 ### Threshold and minimum guarantee
-- Dynamic threshold: <=5 projects -> 0.40 | 6-10 -> 0.50 | >10 -> 0.60
-- Always keep the top N projects by score (N = min_projects_to_keep from params).
-- Include ALL projects in project_scores (kept and dropped).
+- After scoring all projects, determine a dynamic threshold:
+    - If total projects <= 5:  threshold = 0.40
+    - If total projects 6–10:  threshold = 0.50
+    - If total projects > 10:  threshold = 0.60
+- Drop all projects below the threshold.
+- Exception: always keep the top N projects by score, even if they fall
+  below the threshold. N is provided in the input as `min_projects_to_keep`.
+- Set `kept: true` for surviving projects, `kept: false` for dropped ones.
+- Include ALL projects (kept and dropped) in `project_scores` for the
+  alignment report.
 
-### Strict rules
+### kept_sections and dropped_sections
+- `kept_sections`: list the CVData top-level fields that have at least one
+  non-empty value after filtering — e.g. ["relevant_projects", "education",
+  "languages", "countries_of_experience"].
+- `dropped_sections`: list any top-level fields that were non-empty in the
+  input CVData but are empty after filtering.
+  Note: if `employment_record` is [] in the input, do not list it as dropped —
+  it was never populated. If it is non-empty in the input, pass it through
+  unchanged and do NOT list it in dropped_sections.
+
+### warnings
+- Add a warning string for any of the following conditions:
+    - Fewer than `min_projects_to_keep` projects survived above the threshold
+      before the minimum guarantee was applied.
+    - More than half of all projects were dropped.
+    - No geography matches were found across any project.
+    - No sector keyword matches were found across any project.
+- Leave as [] if none of these conditions apply.
+
+## Strict rules
 - Do NOT modify any field values in the CVData. Copy them exactly as received.
-- Only `relevant_projects` changes between input and output.
-- All other CVData fields are passed through unchanged.
+- Do NOT add, infer, or generate any content.
+- The `data` block must be a valid CVData object.
+- Only `relevant_projects` changes between input and output — it contains
+  only the kept projects, in their original order.
+- Every other CVData field — including `employment_record`, `education`,
+  `languages`, `countries_of_experience`, `key_qualifications`, `certifications`,
+  and all personal info — must be copied to the output exactly as received.
+  Never empty a field that was non-empty in the input.
 
 ## Inputs
 The user message will contain:
@@ -103,7 +155,7 @@ def run(run_dir: Path) -> dict:
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
 
     cv_data = cv_raw["data"]
-    tor_data = tor_raw["data"]
+    tor_data = resolve_tor_for_agents(tor_raw, context="cv_tor_mapper.run")
     params = manifest["params"]
 
     user_message = (

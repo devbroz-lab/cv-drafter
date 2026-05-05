@@ -19,7 +19,7 @@ from anthropic import Anthropic
 
 from models import CVData
 from pipeline.manifest import update_step
-from pipeline.utils import strip_code_fences
+from pipeline.utils import resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
 
@@ -40,6 +40,7 @@ and flag high-severity issues for human resolution.
   "review": {
     "high_severity": [
       {
+        "path": "...dot-path into CVData...",
         "field": "...",
         "issue": "...",
         "recommendation": "..."
@@ -47,6 +48,7 @@ and flag high-severity issues for human resolution.
     ],
     "low_severity": [
       {
+        "path": "...dot-path into CVData...",
         "field": "...",
         "issue": "...",
         "original": "...",
@@ -60,37 +62,137 @@ and flag high-severity issues for human resolution.
 - `passed` is true only if `high_severity` is empty.
 - If `passed` is false, the pipeline will be blocked until a human resolves
   the flagged issues.
+- `path` must be a machine-readable dot-path into CVData for each issue.
+  Examples:
+  - "countries_of_experience.0.country"
+  - "generated_fields.2.content"
+  - "relevant_projects.1.activities_performed"
+- `field` remains a human-readable label for UI display only.
+- If an issue refers to multiple fields, split it into separate issue objects
+  so each one has exactly one concrete `path`.
 
 ## Severity definitions
 
 ### High severity — flag only, do NOT fix
-Flag as high severity if:
-1. Factual inconsistency — a field contradicts another field in the same CVData.
-2. Unverifiable claim — a generated_fields item makes a specific, concrete claim
-   (number, named technology, named institution) that cannot be traced to any
-   project or qualification in the CVData.
-3. Missing critical ToR requirement — a required_competency or key_task is not
-   addressed by any field in the CVData at all.
+Flag as high severity if any of the following are true:
 
-CRITICAL: When flagging high severity, copy the field value UNCHANGED into the
-output CVData. Never empty or nullify a field you are flagging.
+1. Factual inconsistency
+   A field contains a claim that contradicts another field in the same CVData.
+   Examples:
+   - A date_from is later than date_to in the same record.
+   - A project location contradicts the expert's stated countries_of_experience.
+   - present_position describes a role not found anywhere in relevant_projects.
+
+2. Unverifiable claim
+   A generated_fields item (source="tor" or source="generated") makes a
+   specific, concrete claim — a number, a named technology, a named
+   institution — that cannot be traced to any project or qualification
+   in the CVData.
+   When verifying a generated_fields bullet against CV evidence, check BOTH
+   activities_performed AND main_project_features for each project.
+   activities_performed is frequently empty — this does not mean the project
+   lacks evidence. A claim is only unverifiable if it cannot be traced to
+   either field across all projects.
+   Examples:
+   - "Managed a $4M grid rehabilitation project" — no project in CVData
+     mentions this figure.
+   - "Certified PRINCE2 practitioner" — no certification listed.
+   Do NOT flag vague or qualitative claims — only specific, concrete,
+   traceable ones.
+
+3. Missing critical ToR requirement
+   A required_competency or key_task from the DistilledToR is not addressed
+   by any field in the CVData — not in generated_fields, not in any project's
+   activities_performed, not in key_qualifications.
+   Only flag if the gap is total — if there is partial evidence, treat it
+   as low severity.
+
+CRITICAL: When flagging a field as high severity, copy its current value
+into the output CVData UNCHANGED. Never empty, clear, or nullify a field
+you are flagging. The flag is for human awareness only — the original
+content must survive into the output intact.
 
 ### Low severity — fix automatically
-Fix as low severity if:
-1. Filler or passive language in generated fields.
-2. Missing action verb at the start of a generated bullet.
-3. Generated bullet exceeds 25 words — tighten without losing the core claim.
-4. Generic language with no specificity in generated fields.
-5. Whitespace or formatting inconsistency.
+Fix as low severity if any of the following are true:
+
+1. Filler or passive language
+   A generated field contains: "responsible for", "involved in",
+   "participated in", "assisted with", "worked on", "helped to",
+   "supported the", or any passive construction.
+   Fix: rewrite with an active verb grounded in the same content.
+
+2. Missing action verb
+   A generated_fields bullet or key_qualifications item does not begin
+   with an action verb.
+   Fix: prepend or restructure to lead with an action verb.
+
+3. Exceeds 25-word limit
+   A generated_fields bullet exceeds 25 words.
+   Fix: tighten without losing the core claim. Do not remove sector keywords.
+
+4. Generic language with no specificity
+   A generated_fields bullet contains no concrete noun, no measurable
+   outcome, and no sector keyword — it could apply to any expert in
+   any field.
+   Fix: inject the most relevant sector keyword from DistilledToR.sector_keywords
+   that is naturally applicable. If none apply, flag as high severity instead.
+
+5. Whitespace or formatting inconsistency
+   Trailing spaces, double spaces, inconsistent capitalisation within
+   a list, or punctuation at the end of some bullets but not others.
+   Fix: normalise silently. Do not list these in low_severity unless
+   the change affects meaning.
 
 ## Review scope
-- Focus on generated_fields items (source="tor" items especially).
-- Check relevant_projects for date consistency and filler language only.
-- Do NOT rewrite project content for style beyond filler removal.
+
+### generated_fields
+- Review every GeneratedField item for all severity rules above.
+- Pay extra attention to items with source="tor" — they are most at risk
+  of unverifiable claims.
+- Cross-reference generation_warnings from Agent 4 — if a warning flags
+  weak CV grounding, scrutinise those bullets first.
+- When checking whether a bullet is verifiable against CV evidence, use ALL
+  of the following fields as valid evidence sources:
+    - relevant_projects: main_project_features, positions_held, project_name,
+      location, client, company, donor
+    - key_qualifications (extracted list)
+    - certifications
+    - membership_professional_bodies
+
+Do NOT require activities_performed to be populated — it is intentionally
+left empty in the extraction stage for GIZ CVs. A bullet is only
+unverifiable if no evidence exists across ALL of the above fields combined.  
+
+### relevant_projects
+- Review activities_performed and main_project_features for filler language
+  (low severity only — do not rewrite project content beyond filler removal).
+- Review date consistency: date_from must be earlier than date_to.
+- Do NOT rewrite project content for style — only fix filler and date errors.
+
+### personal_info
+- Check that date_of_birth, nationality, and place_of_residence are
+  internally consistent where cross-checkable.
+- Do not flag missing optional fields as issues.
+
+### education
+- Check date consistency only (date_from earlier than date_to).
+- Do not flag content.
+
+### languages
+- Check that reading_raw, speaking_raw, writing_raw are populated for
+  every language entry. If any are empty, flag as high severity only if
+  the language appears in DistilledToR.language_requirements.
+
+### All other fields
+- Check for filler language only.
+- Do not flag style, length, or completeness unless the field is in
+  generated_fields.
 
 ## What NOT to do
-- Do not flag subjective style preferences.
-- Do not change field values outside the fixes described above.
+- Do not rewrite content that is already good — if a bullet is clear,
+  grounded, and active, leave it unchanged.
+- Do not flag subjective style preferences as issues.
+- Do not change field values outside of the fixes described above.
 
 ## Inputs
 The user message will contain:
@@ -98,7 +200,6 @@ The user message will contain:
   <tor_data>            — DistilledToR from tor_data.json                </tor_data>
   <generation_warnings> — warnings list from Agent 4                     </generation_warnings>
 """
-
 
 def run(run_dir: Path) -> tuple[CVData, bool]:
     """
@@ -116,7 +217,8 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
 
     cv_data_in = gf_raw["generated"]
     generation_warns = gf_raw.get("generation_warnings", [])
-    tor_data = json.loads((run_dir / "tor_data.json").read_text(encoding="utf-8"))["data"]
+    tor_raw = json.loads((run_dir / "tor_data.json").read_text(encoding="utf-8"))
+    tor_data = resolve_tor_for_agents(tor_raw, context="content_reviewer.run")
 
     user_message = (
         f"<cv_data>\n{json.dumps(cv_data_in, indent=2)}\n</cv_data>\n\n"

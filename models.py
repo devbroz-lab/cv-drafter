@@ -88,6 +88,13 @@ class LanguageProficiency(BaseModel):
         default="", description="Speaking — mapped to CEFR (A1–C2 or Native)"
     )  # noqa: E501
     writing_cefr: str = Field(default="", description="Writing — mapped to CEFR (A1–C2 or Native)")
+    cefr_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when CEFR values were inferred from a numeric raw scale "
+            "(e.g. GIZ template 1=C2). Human verification recommended."
+        ),
+    )
 
 
 class CountryExperience(BaseModel):
@@ -158,7 +165,15 @@ class DetailedTask(BaseModel):
 
     task: str = Field(default="", description="A single detailed task statement")
     source: str = Field(
-        default="", description="Where this task came from: 'tor' | 'experience' | 'generated'"
+        default="",
+        description="Where this task came from: 'tor' | 'experience' | 'cv_section' | 'generated'",
+    )
+    verification_warning: str = Field(
+        default="",
+        description=(
+            "Populated when the task references an institution or country not found "
+            "in the candidate's documented experience. Requires human verification."
+        ),
     )
 
 
@@ -264,6 +279,16 @@ class CVData(BaseModel):
         description="Details of any current or past World Bank Group employment or appointments",
     )
 
+    # --- Extraction metadata (populated by Agent 1 post-processing) ---
+    extraction_warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Warnings emitted during extraction post-processing — e.g. numeric "
+            "language scale detected, key_qualifications empty, suspicious task "
+            "institution references. Surfaced to downstream agents and human reviewers."
+        ),
+    )
+
     # --- Agent-generated fields (populated by Fields Generator agent) ---
     generated_fields: list[GeneratedField] = Field(
         default_factory=list,
@@ -337,10 +362,83 @@ class GeneratedField(BaseModel):
     source: str = Field(default="")
 
 
+# ---------------------------------------------------------------------------
+# New ToR structured sub-types (additive — do not break existing DistilledToR)
+# ---------------------------------------------------------------------------
+
+
+class GeographicRequirement(BaseModel):
+    """
+    Structured representation of a geographic experience requirement,
+    preserving OR-logic alternatives.  Added so downstream agents receive
+    conditional logic rather than a flat string.
+    """
+
+    primary: str = Field(
+        default="", description="Primary geographic requirement — e.g. 'South Africa — 3 years'"
+    )
+    alternative: str = Field(
+        default="", description="Alternative pathway — e.g. 'Africa — 5 years'"
+    )
+    applies_to: str = Field(default="", description="Which expert pool this requirement applies to")
+    logic: str = Field(default="AND", description="Logical operator: 'OR' or 'AND'")
+
+
+class RoleTierMapping(BaseModel):
+    """
+    Maps the proposed_position to the single relevant experience tier in a
+    multi-tier ToR.  Prevents downstream agents from being overwhelmed by
+    multiple threshold values.
+    """
+
+    tier_name: str = Field(
+        default="", description="Matched tier label — e.g. 'team_lead', 'senior_expert'"
+    )
+    required_years: int = Field(
+        default=0, description="Required years of experience for this tier"
+    )
+    source_text: str = Field(
+        default="", description="Raw text snippet from ToR that stated this requirement"
+    )
+
+
+class TaskCluster(BaseModel):
+    """
+    Thematic grouping of key_tasks.  Reduces cognitive load for the Mapper
+    and Generator by grouping related tasks under a common theme.
+    """
+
+    theme: str = Field(default="", description="Short theme label — e.g. 'Eskom Unbundling'")
+    member_task_indices: list[int] = Field(
+        default_factory=list,
+        description="Zero-based indices into DistilledToR.key_tasks that belong to this cluster",
+    )
+
+
+class Competency(BaseModel):
+    """
+    A single ToR competency with a priority signal.
+    Replaces the flat string list in required_competencies / preferred_competencies
+    with a structured form.  The plain-string form is preserved via a migration shim.
+    """
+
+    text: str = Field(default="", description="The competency statement")
+    priority: str = Field(
+        default="required",
+        description="One of: 'critical', 'required', 'preferred'",
+    )
+    source: str = Field(
+        default="required",
+        description="Source list in ToR: 'required' or 'preferred'",
+    )
+
+
 class DistilledToR(BaseModel):
     """
     Structured summary of a Terms of Reference document produced by Agent 2
     (ToR Summarizer).  Consumed by Agents 3, 4, 5, and 6.
+
+    Backward-compatible: all new fields are Optional with safe defaults.
     """
 
     position_title: str = Field(default="")
@@ -358,6 +456,33 @@ class DistilledToR(BaseModel):
     page_limit_stated: int | None = Field(default=None)
     page_limit_source: str = Field(default="")
 
+    # --- New structured fields (populated by post-processing in Agent 2) ---
+    geographic_requirement: GeographicRequirement | None = Field(
+        default=None,
+        description=(
+            "Structured geographic requirement preserving OR-logic alternatives. "
+            "Populated by post-processing when 'OR' logic is detected."
+        ),
+    )
+    applied_role_tier: RoleTierMapping | None = Field(
+        default=None,
+        description=(
+            "The single experience tier mapped to proposed_position. "
+            "Populated by post-processing in Agent 2."
+        ),
+    )
+    task_clusters: list[TaskCluster] = Field(
+        default_factory=list,
+        description="Thematic groupings of key_tasks produced by Agent 2.",
+    )
+    structured_competencies: list[Competency] = Field(
+        default_factory=list,
+        description=(
+            "Competencies with priority signals. Mirrors required_competencies + "
+            "preferred_competencies but in structured form."
+        ),
+    )
+
 
 class FormatProfile(BaseModel):
     """
@@ -369,6 +494,13 @@ class FormatProfile(BaseModel):
     generative_field_keys: list[str] = Field(default_factory=list)
     page_limit_default: int | None = Field(default=None)
     language_scale: str = Field(default="cefr")
+    # Compression defaults — used by _build_params when the session body
+    # does not supply explicit target_words / compression_ratio values.
+    # target_words = 0 means "use compression_ratio instead".
+    default_target_words: int = Field(default=0, description="Hard word-count cap (0 = use ratio)")
+    default_compression_ratio: float = Field(
+        default=0.80, description="Fallback ratio when target_words is 0"
+    )
 
 
 FORMAT_PROFILES: dict[str, FormatProfile] = {
@@ -377,12 +509,16 @@ FORMAT_PROFILES: dict[str, FormatProfile] = {
         generative_field_keys=["key_qualifications"],
         page_limit_default=4,
         language_scale="cefr",
+        default_target_words=0,
+        default_compression_ratio=0.80,
     ),
     "world_bank": FormatProfile(
         format_id="world_bank",
         generative_field_keys=["detailed_tasks"],
         page_limit_default=4,
         language_scale="freetext",
+        default_target_words=0,
+        default_compression_ratio=0.80,
     ),
 }
 
