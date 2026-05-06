@@ -32,7 +32,6 @@ STEP_ORDER: list[str] = [
     "checkpoint_2",
     "fields_generator",
     "content_reviewer",
-    "field_editor",
     "compressor",
     "checkpoint_3",
     "renderer",

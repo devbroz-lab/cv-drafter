@@ -1,6 +1,7 @@
 """Session lifecycle endpoints backed by Supabase."""
 
 import json
+import logging
 from typing import Annotated, Any
 
 from fastapi import (
@@ -10,6 +11,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Response,
     UploadFile,
     status,
 )
@@ -48,10 +50,15 @@ from api.services.database import (
     count_active_sessions,
     create_session_row,
     get_session_row,
+    increment_round,
+    set_failed,
+    set_processing,
     update_session_row,
     update_session_storage_keys,
 )
 from api.services.dot_path import DotPathError, set_by_dot_path
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
@@ -415,10 +422,9 @@ async def get_preview_docx(
     """
     Stream runs/{session_id}/preview.docx directly.
 
-    preview.docx is a local-only artifact produced by the preview render step
-    before field_editor_pending.  It is never uploaded to Supabase Storage,
-    so it cannot be served via a signed URL — it is streamed directly from disk.
-    Only available while the file exists (i.e. after content_reviewer completes).
+    preview.docx is a local-only artifact.  It is never uploaded to Supabase
+    Storage, so it cannot be served via a signed URL — it is streamed directly
+    from disk.  Only available if a preview file was produced for this session.
     """
     from fastapi.responses import FileResponse
 
@@ -431,7 +437,7 @@ async def get_preview_docx(
     if not preview_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="preview.docx not available — pipeline has not reached field_editor_pending yet",
+            detail="preview.docx not available for this session",
         )
     return FileResponse(
         path=str(preview_path),
@@ -480,7 +486,7 @@ async def start_session_processing(
     )
 
 
-# ── POST /sessions/{id}/comments ──────────────────────────────────────────────
+# ── POST /sessions/{id}/comments (DEPRECATED) ────────────────────────────────
 
 
 @router.post("/{session_id}/comments", response_model=CommentsResponse)
@@ -489,15 +495,30 @@ async def submit_revision_comment(
     payload: CommentsRequest,
     background_tasks: BackgroundTasks,
     current_user: CurrentUser,
+    response: Response,
 ) -> CommentsResponse:
     """
-    Submit recruiter feedback and trigger a revision run.
+    DEPRECATED — use POST /sessions/{id}/field-edit instead.
 
-    Only allowed when the session status is 'completed'.  The new comment is
-    appended to the existing recruiter_comments field with a round prefix so
-    the full feedback history is preserved.  The background task then calls
-    run_revision() with the updated comments string.
+    This endpoint re-runs the full Phase 3 agent chain on free-text feedback.
+    It is replaced by POST /field-edit which applies targeted, LLM-mediated
+    edits directly to specific fields without re-running the pipeline.
+
+    This endpoint remains functional for backward compatibility but will be
+    removed in a future release.
     """
+    log.warning(
+        "DEPRECATED endpoint POST /sessions/%s/comments called. "
+        "Use POST /sessions/%s/field-edit instead.",
+        session_id,
+        session_id,
+    )
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "2026-12-31"
+    response.headers["Link"] = (
+        f'</sessions/{session_id}/field-edit>; rel="successor-version"'
+    )
+
     row = _require_owned_session(session_id, current_user.user_id)
 
     if row["status"] != "completed":
@@ -549,7 +570,10 @@ async def submit_revision_comment(
         session_id=session_id,
         status="processing",
         round=next_round,
-        message="Revision queued. Poll /status for updates.",
+        message=(
+            "Revision queued. Poll /status for updates. "
+            "DEPRECATED: use POST /field-edit for targeted edits instead."
+        ),
     )
 
 
@@ -992,60 +1016,67 @@ async def resolve_review(
 async def submit_field_edits(
     session_id: str,
     payload: FieldEditRequest,
-    background_tasks: BackgroundTasks,
     current_user: CurrentUser,
 ) -> FieldEditResponse:
     """
-    Apply targeted natural-language edits to generated_fields["generated"] during
-    the field_editor_pending pause, then resume processing (field_editor → compressor).
+    Apply targeted natural-language edits to specific fields in
+    generated_fields["generated"] after the pipeline has completed.
 
-    Session must be in field_editor_pending status.
-    Each edit is { field_path, instruction }.  The field_editor agent processes them
-    sequentially (one LLM call per edit) so each subsequent edit operates on the
-    already-patched state.  Paths that cannot be resolved or that the agent skips
-    are returned in `skipped` — the pipeline continues regardless.
+    Replaces POST /comments for post-completion revisions.  Each edit is
+    { field_path, instruction }.  The field_editor agent processes them
+    sequentially (one LLM call per edit) so each edit operates on the
+    already-patched state.  Paths that cannot be resolved or that the agent
+    skips are returned in `skipped` — the pipeline proceeds regardless.
 
-    Wired and ready; requires pipeline/agents/field_editor.py to be implemented.
+    After all edits are applied the session transitions to checkpoint_3_pending.
+    Approve with POST /approve/checkpoint_3 to trigger a re-render.
+
+    Session must be in `completed` OR `checkpoint_3_pending` status.
+    The latter allows the user to submit a corrected batch for fields that
+    were skipped in a previous POST /field-edit call without waiting for a
+    full render cycle.
     """
     row = _require_owned_session(session_id, current_user.user_id)
 
-    if row["status"] != "field_editor_pending":
+    _FIELD_EDIT_ALLOWED = {"completed", "checkpoint_3_pending"}
+    if row["status"] not in _FIELD_EDIT_ALLOWED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Session is not field_editor_pending (current status: {row['status']})",
+            detail=(
+                f"Field edits require session status 'completed' or "
+                f"'checkpoint_3_pending' (current: {row['status']})."
+            ),
         )
 
-    from pipeline.agents import field_editor
-    from pipeline.paths import get_run_dir as _get_run_dir
-
-    run_dir = _get_run_dir(session_id)
     edits = [{"field_path": e.field_path, "instruction": e.instruction} for e in payload.edits]
 
-    # Run the field_editor agent synchronously so applied/skipped can be
-    # returned in this HTTP response (per FIELD_EDITOR_CONTEXT.md §9).
+    # Increment the round counter so the re-rendered output.docx gets the
+    # correct label (round_02_giz.docx, round_03_giz.docx, …).
+    new_round = increment_round(session_id)
+
+    # Transition to processing before running the agent.
+    set_processing(session_id)
+
+    # Run field_editor synchronously so applied/skipped are available for
+    # the HTTP response (FIELD_EDITOR_CONTEXT.md §4).
+    from pipeline.orchestrator import run_field_editor_task
+
     try:
-        applied, skipped = field_editor.run(run_dir, edits)
+        applied, skipped = run_field_editor_task(session_id=session_id, edits=edits)
     except Exception as exc:
-        from api.services.database import set_failed as _set_failed
-        _set_failed(session_id, str(exc))
+        set_failed(session_id, str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Field editor failed: {exc}",
         ) from exc
 
-    # Transition DB to processing and schedule compressor as background task.
-    from api.services.database import set_processing as _set_processing
-    _set_processing(session_id)
-
-    from pipeline.orchestrator import run_phase3_after_field_editor
-    background_tasks.add_task(run_phase3_after_field_editor, session_id=session_id)
-
     return FieldEditResponse(
         session_id=session_id,
-        status="processing",
+        status="checkpoint_3_pending",
+        round=new_round,
         applied=applied,
         skipped=skipped,
-        message="Field edits applied. Compressor starting.",
+        message="Field edits applied. Awaiting checkpoint_3 approval before re-render.",
     )
 
 

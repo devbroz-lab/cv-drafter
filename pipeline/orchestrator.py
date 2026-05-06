@@ -31,7 +31,6 @@ from api.services.database import (
     set_checkpoint_pending,
     set_done,
     set_failed,
-    set_field_editor_pending,
     set_processing,
     update_session_storage_keys,
 )
@@ -42,12 +41,13 @@ from pipeline.agents import (
     content_reviewer,
     cv_extractor,
     cv_tor_mapper,
+    field_editor,
     fields_generator,
     tor_summarizer,
 )
 from pipeline.extractor import extract_text
 from pipeline.manifest import create_manifest, get_step_status, update_step
-from pipeline.paths import RUNS_ROOT, get_preview_docx_path, get_run_dir
+from pipeline.paths import RUNS_ROOT, get_run_dir
 
 log = logging.getLogger(__name__)
 
@@ -199,19 +199,13 @@ async def run_phase2(*, session_id: str) -> None:
 
 async def run_phase3(*, session_id: str) -> None:
     """
-    Run Agents 4 (Fields Generator) and 5 (Content Reviewer), render preview.docx,
-    then halt at field_editor_pending.
+    Run Agents 4 (Fields Generator), 5 (Content Reviewer), and 6 (Compressor),
+    then halt at checkpoint_3_pending.
 
     The reviewer is non-blocking: high-severity issues are recorded in
-    generated_fields.json and surfaced to the user as informational context
-    during the field_editor_pending review step.
-
-    The preview render is non-fatal: if it fails the session still advances to
-    field_editor_pending so the user can submit edits (the viewer will show an
-    error when trying to load the preview).
-
-    The pipeline resumes when the user submits edits via POST /field-edit,
-    which calls run_phase3_after_field_editor() to run Agent 7 + compressor.
+    generated_fields.json["review"] and surfaced in GET /review.  The pipeline
+    continues to the compressor regardless.  If the user wants to fix issues
+    after reviewing the completed output they use POST /field-edit.
     """
     set_processing(session_id)
     run_dir = get_run_dir(session_id)
@@ -224,30 +218,11 @@ async def run_phase3(*, session_id: str) -> None:
             if not passed:
                 log.warning(
                     "Session %s content reviewer flagged high-severity issues — "
-                    "continuing to field_editor_pending (non-blocking mode)",
+                    "continuing to compressor (non-blocking mode)",
                     session_id,
                 )
 
-        # ── Preview render (non-fatal) ────────────────────────────────────
-        row = get_session_row(session_id) or {}
-        target_format = row.get("target_format", "giz")
-        preview_path = get_preview_docx_path(session_id)
-        try:
-            from templates.registry import get_renderer
-            get_renderer(target_format)(session_id, output_path=preview_path)
-            log.info("Session %s preview render complete → %s", session_id, preview_path)
-        except Exception as preview_exc:
-            log.warning(
-                "Session %s preview render failed (non-fatal, continuing to "
-                "field_editor_pending): %s",
-                session_id,
-                preview_exc,
-            )
-
-        # ── Halt at field_editor_pending ──────────────────────────────────
-        update_step(run_dir, "field_editor", "pending")
-        set_field_editor_pending(session_id)
-        log.info("Session %s reached field_editor_pending", session_id)
+        await _run_compressor_and_halt(session_id, run_dir)
 
     except Exception as exc:
         log.exception("Session %s phase 3 failed: %s", session_id, exc)
@@ -269,23 +244,39 @@ async def run_phase3_resume(*, session_id: str) -> None:
         set_failed(session_id, str(exc))
 
 
-async def run_phase3_after_field_editor(*, session_id: str) -> None:
+def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[str], list[str]]:
     """
-    Run the compressor and halt at checkpoint_3 after field_editor completes.
+    Apply user-directed field edits to generated_fields.json and transition
+    the session to checkpoint_3_pending.
 
-    Scheduled as a FastAPI BackgroundTask by the POST /field-edit endpoint
-    immediately after field_editor.run() returns synchronously.  The DB status
-    is already set to 'processing' by the HTTP handler before this task runs.
+    This is a synchronous function called directly by the POST /field-edit
+    handler (not as a BackgroundTask) so the HTTP response can include the
+    applied/skipped lists.
+
+    The caller is responsible for:
+      - calling increment_round() before invoking this function
+      - setting DB status to 'processing' before invoking (set_processing)
+      - transitioning to checkpoint_3_pending after this returns
+
+    Raises on hard failure; caller should catch and call set_failed().
     """
     run_dir = get_run_dir(session_id)
 
-    try:
-        await _run_compressor_and_halt(session_id, run_dir)
-    except Exception as exc:
-        log.exception(
-            "Session %s phase 3 (post field_editor) failed: %s", session_id, exc
-        )
-        set_failed(session_id, str(exc))
+    applied, skipped = field_editor.run(run_dir, edits)
+
+    # Reset checkpoint_3 and renderer manifest steps so Phase 4 will re-run
+    # on the next POST /approve/checkpoint_3.
+    update_step(run_dir, "checkpoint_3", "pending")
+    update_step(run_dir, "renderer", "waiting")
+
+    set_checkpoint_pending(session_id, 3)
+    log.info(
+        "Session %s field_editor complete — applied=%s skipped=%s → checkpoint_3_pending",
+        session_id,
+        applied,
+        skipped,
+    )
+    return applied, skipped
 
 
 async def _run_compressor_and_halt(session_id: str, run_dir: Path) -> None:

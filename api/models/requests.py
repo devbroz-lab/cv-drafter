@@ -245,6 +245,7 @@ class FieldEditRequest(BaseModel):
 class FieldEditResponse(BaseModel):
     session_id: str
     status: SessionStatus
+    round: int
     applied: list[str]
     skipped: list[str]
     message: str

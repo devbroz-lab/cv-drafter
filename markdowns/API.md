@@ -2,7 +2,7 @@
 
 ## Overview
 
-The CV Reformatter API processes CVs through a 6-agent AI pipeline, producing formatted Word documents tailored for international development donors (GIZ, World Bank). The pipeline includes human approval checkpoints and a revision workflow.
+The CV Reformatter API processes CVs through a 7-agent AI pipeline, producing formatted Word documents tailored for international development donors (GIZ, World Bank). The pipeline includes human approval checkpoints and a post-completion field editing workflow.
 
 **Base URL**: `http://127.0.0.1:8000`  
 **Authentication**: Supabase JWT bearer token (required for all endpoints except `/health`)
@@ -84,6 +84,12 @@ Create a new CV reformatting session.
 - `job_description` *(optional, string)*: Free-text job description
 - `recruiter_comments` *(optional, string)*: Initial recruiter feedback
 
+**Compression parameters (pipeline-internal)**
+
+The interactive OpenAPI docs may still list `target_words` and `compression_ratio` on this request body. **Client applications should omit them.** End users do not configure or display compressor limits in normal flows—the pipeline resolves them from **donor defaults** (`FORMAT_PROFILES` for the chosen `target_format`) plus fixed server fallbacks when Phase 1 writes `runs/{session_id}/manifest.json` (`params`). As of the current handler, **`POST /sessions` does not persist those two fields onto the Supabase session row**, so sending them in the JSON body **has no effect** on a run **unless** the server is updated to persist them on the session row.
+
+For the full mechanic, see [`PIPELINE_CONTEXT.md`](PIPELINE_CONTEXT.md) §§1, 4, and 9.
+
 **Response** (201):
 ```json
 {
@@ -93,7 +99,6 @@ Create a new CV reformatting session.
 ```
 
 **Errors**:
-- `400`: World Bank format not yet available
 - `429`: Max 3 concurrent active sessions per user
 - `422`: Invalid request body
 
@@ -130,8 +135,8 @@ Get current session status, file keys, and download URLs.
 - `processing` — Pipeline is running
 - `checkpoint_1_pending` — Agents 1 & 2 done, awaiting approval
 - `checkpoint_2_pending` — Agent 3 done, awaiting approval
-- `checkpoint_3_pending` — Agents 4, 5, 6 done, awaiting approval
-- `reviewer_blocked` — Content reviewer flagged high-severity issues
+- `checkpoint_3_pending` — Agents 4, 5, 6 done (or field edits applied), awaiting approval before re-render
+- `reviewer_blocked` — Content reviewer flagged high-severity issues during pipeline run
 - `completed` — Rendering done, output ready for download
 - `failed` — Pipeline error (see `error_message`)
 
@@ -296,11 +301,68 @@ Poll the fine-grained step-by-step progress manifest.
 
 ---
 
+#### `POST /sessions/{session_id}/tor/select-pool`
+Persist the user-selected ToR pool index for downstream agents.
+
+This should be called after Phase 1 (`checkpoint_1_pending`) when `tor_data.json`
+contains multiple (or single) pools and before approving `checkpoint_1`.
+
+**Request Body** (application/json):
+```json
+{
+  "selected_pool_index": 0
+}
+```
+
+**Response** (200):
+```json
+{
+  "session_id": "20260425_143022_a1b2",
+  "selected_pool_index": 0,
+  "pool_count": 2,
+  "position_title": "Team Leader",
+  "message": "ToR pool selection saved."
+}
+```
+
+**Errors**:
+- `400` — invalid index or malformed `tor_data.pools`
+- `404` — `tor_data.json` not available yet
+
+---
+
+#### `GET /sessions/{session_id}/tor/pools`
+Get ToR pools and current selection for checkpoint-1 picker UIs.
+
+**Response** (200):
+```json
+{
+  "session_id": "20260425_143022_a1b2",
+  "pools": [
+    {
+      "position_title": "Team Leader",
+      "sector": "Water",
+      "key_tasks": ["Task 1", "Task 2"]
+    }
+  ],
+  "selected_pool_index": 0
+}
+```
+
+**Errors**:
+- `400` — malformed `tor_data` envelope (e.g. invalid index type/range)
+- `404` — `tor_data.json` not available yet
+
+---
+
 #### `POST /sessions/{session_id}/approve/{checkpoint}`
 Approve a checkpoint and resume the next phase.
 
 **Parameters**:
 - `checkpoint` *(required, enum)*: `checkpoint_1`, `checkpoint_2`, or `checkpoint_3`
+
+**Checkpoint-specific preconditions**:
+- `checkpoint_1`: `tor_data.json.selected_pool_index` must be set to a valid index in `tor_data.json.pools`. Otherwise approval is rejected with `409`.
 
 **Request Body** (application/json):
 ```json
@@ -325,8 +387,6 @@ Approve a checkpoint and resume the next phase.
 
 ---
 
-### Checkpoint Data
-
 #### `GET /sessions/{session_id}/manifest`
 Get detailed pipeline manifest (see above).
 
@@ -344,17 +404,21 @@ Get the Content Reviewer's assessment (high/low severity issues).
   "session_id": "20260425_143022_a1b2",
   "high_severity": [
     {
-      "field": "generated_fields.0.content",
-      "issue": "Unverifiable claim: '10-year track record' not found in CV",
-      "recommendation": "Remove or rephrase with grounded evidence"
+      "path": "generated_fields.0.content",
+      "field": "Unverifiable claim",
+      "issue": "'10-year track record' cannot be traced to any project in CVData",
+      "recommendation": "Remove or rephrase with grounded evidence",
+      "solvability": "human"
     }
   ],
   "low_severity": [
     {
-      "field": "generated_fields.1.content",
+      "path": "generated_fields.1.content",
+      "field": "Filler language",
       "issue": "Passive language: 'was responsible for'",
       "original": "was responsible for designing the framework",
-      "fixed": "Designed the framework"
+      "fixed": "Designed the framework",
+      "solvability": "pipeline"
     }
   ],
   "passed": false,
@@ -364,10 +428,16 @@ Get the Content Reviewer's assessment (high/low severity issues).
 }
 ```
 
+**`solvability` values**:
+- `"pipeline"` — the `field_editor` agent can resolve this by rewriting the field value (date errors, passive language, word-count overruns, etc.)
+- `"human"` — requires recruiter judgement or external information (unverifiable claims, missing ToR competencies, language proficiency gaps, experience threshold failures)
+
 ---
 
 #### `GET /sessions/{session_id}/output`
 Get the final generated CV data (after all agents complete).
+
+When a `compression` object is included, it is **output metadata** from Agent 6: `target_words` (and related fields) reflect the **effective cap the compressor applied** using internal defaults—not a request body knob clients set here.
 
 **Response** (200):
 ```json
@@ -406,6 +476,9 @@ Get the final generated CV data (after all agents complete).
 #### `POST /sessions/{session_id}/resolve`
 Resolve high-severity content issues and resume the pipeline.
 
+**Preconditions**:
+- Session status must be `reviewer_blocked`
+
 **Request Body** (application/json):
 ```json
 {
@@ -431,10 +504,17 @@ Resolve high-severity content issues and resume the pipeline.
 
 ---
 
-### Revision Workflow
+### Field Edit Workflow
 
-#### `POST /sessions/{session_id}/comments`
-Submit recruiter feedback to trigger a revision run.
+#### `POST /sessions/{session_id}/field-edit`
+Apply targeted natural-language edits to specific CV fields after the pipeline
+has completed. Replaces the deprecated `POST /comments` revision workflow.
+
+The user selects fields via the DocxViewer on the frontend and provides a natural
+language instruction for each. The `field_editor` agent applies each instruction
+via an individual LLM call, writes the result back to
+`generated_fields.json["generated"]`, then halts at `checkpoint_3_pending` for
+approval before the renderer produces a new `output.docx`.
 
 **Preconditions**:
 - Session status must be `completed`
@@ -442,28 +522,51 @@ Submit recruiter feedback to trigger a revision run.
 **Request Body** (application/json):
 ```json
 {
-  "comment": "Please emphasize renewable energy expertise more strongly"
+  "edits": [
+    {
+      "field_path": "key_qualifications[2]",
+      "instruction": "Make this more concise and remove passive voice"
+    },
+    {
+      "field_path": "relevant_projects[1].location",
+      "instruction": "Change to Nairobi, Kenya"
+    }
+  ]
 }
 ```
 
 **Parameters**:
-- `comment` *(required, string)*: Recruiter feedback (min 1 character)
+- `edits` *(required, array)*: 1–5 edit objects. Rejected with `422` if empty or more than 5 items.
+- `edits[].field_path` *(required, string)*: Path to the target field relative to `generated_fields["generated"]`. Both bracket notation (`key_qualifications[2]`) and dot notation (`key_qualifications.2`) are accepted.
+- `edits[].instruction` *(required, string)*: Natural language instruction for the LLM agent (min 1 character).
 
 **Response** (200):
 ```json
 {
   "session_id": "20260425_143022_a1b2",
-  "status": "processing",
+  "status": "checkpoint_3_pending",
   "round": 2,
-  "message": "Revision queued. Poll /status for updates."
+  "applied": ["key_qualifications[2]", "relevant_projects[1].location"],
+  "skipped": [],
+  "message": "Field edits applied. Awaiting checkpoint_3 approval before re-render."
 }
 ```
 
-**Behavior**:
-- Appends comment to `recruiter_comments` with `[Round N]: ` prefix
-- Re-runs Phase 3 (Fields Generator → Content Reviewer → Compressor)
-- Halts at `checkpoint_3_pending` for final approval before re-rendering
-- Increments `round` counter
+**Response fields**:
+- `applied`: Paths where the agent successfully wrote a new value
+- `skipped`: Paths the agent could not resolve or could not apply without fabricating information; displayed in the UI but do not halt the pipeline
+- `round`: The new round number after incrementing
+
+**Behaviour**:
+- Increments the session `round` counter immediately
+- Runs `field_editor` agent sequentially across all edits (each edit operates on the already-patched state from the previous edit)
+- Halts at `checkpoint_3_pending` — approve with `POST /approve/checkpoint_3` to trigger re-render
+- Re-render produces `round_NN_{target_format}.docx` uploaded to Supabase Storage
+- Does **not** re-run `fields_generator`, `content_reviewer`, or `compressor`
+
+**Errors**:
+- `409`: Session not in `completed` state
+- `422`: `edits` array is empty, exceeds 5 items, or an individual edit fails field validation
 
 ---
 
@@ -518,27 +621,55 @@ curl -X POST http://127.0.0.1:8000/sessions/{session_id}/approve/checkpoint_1 \
   -d '{"notes": "Approved"}'
 ```
 
-**Step 7: (If reviewer blocked) Resolve issues**
-```bash
-curl -X POST http://127.0.0.1:8000/sessions/{session_id}/resolve \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "overrides": {"generated_fields.0.content": "Fixed text"},
-    "force_pass": false
-  }'
-```
-
-**Step 8: Approve checkpoint_2 & checkpoint_3**
+**Step 7: Approve checkpoint_2 & checkpoint_3**
 ```bash
 # Same as step 6, with checkpoint_2 and checkpoint_3
 ```
 
-**Step 9: Download output**
+**Step 8: Download output**
 ```bash
 SIGNED_URL=$(curl http://127.0.0.1:8000/sessions/{session_id}/files/output/download-url \
   -H "Authorization: Bearer <TOKEN>" | jq -r '.signed_url')
 curl "$SIGNED_URL" -o output.docx
+```
+
+---
+
+### Field Edit Workflow (Post-Completion Revision)
+
+**Step 1: Submit field edits (session must be `completed`)**
+```bash
+curl -X POST http://127.0.0.1:8000/sessions/{session_id}/field-edit \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "edits": [
+      {
+        "field_path": "key_qualifications[0]",
+        "instruction": "Tighten this and keep factual wording"
+      },
+      {
+        "field_path": "relevant_projects[2].location",
+        "instruction": "Change to Nairobi, Kenya"
+      }
+    ]
+  }'
+```
+
+**Step 2: Approve checkpoint_3 to trigger re-render**
+> The `POST /field-edit` response already returns `status: "checkpoint_3_pending"` — no polling needed before this step.
+```bash
+curl -X POST http://127.0.0.1:8000/sessions/{session_id}/approve/checkpoint_3 \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Approved"}'
+```
+
+**Step 4: Download revised output**
+```bash
+SIGNED_URL=$(curl http://127.0.0.1:8000/sessions/{session_id}/files/output/download-url \
+  -H "Authorization: Bearer <TOKEN>" | jq -r '.signed_url')
+curl "$SIGNED_URL" -o output_round2.docx
 ```
 
 ---
@@ -577,39 +708,50 @@ All errors follow this format:
 ```
 queued
   ↓ (POST /start)
-processing (Phase 1)
+processing (Phase 1: cv_extractor + tor_summarizer parallel)
   ↓
 checkpoint_1_pending
-  ↓ (POST /approve/checkpoint_1)
-processing (Phase 2)
+  ↓ (POST /tor/select-pool, then POST /approve/checkpoint_1)
+processing (Phase 2: cv_tor_mapper)
   ↓
 checkpoint_2_pending
   ↓ (POST /approve/checkpoint_2)
-processing (Phase 3)
-  ├→ reviewer_blocked (if high-severity issues)
-  │   ↓ (POST /resolve)
-  │   processing (resume compressor)
-  │   ↓
-  └→ checkpoint_3_pending (if reviewer passed)
-     ↓ (POST /approve/checkpoint_3)
-     processing (Phase 4 - renderer)
-     ↓
-     completed (output.docx ready for download)
+processing (Phase 3: fields_generator → content_reviewer → compressor)
+  ↓
+checkpoint_3_pending
+  ↓ (POST /approve/checkpoint_3)
+processing (Phase 4: renderer → upload output.docx)
+  ↓
+completed (output.docx ready for download)
 
 Any phase → failed (if exception raised)
-completed → processing (POST /comments for revision)
+
+Post-completion field-edit revision:
+completed
+  ↓ (POST /field-edit — synchronous; returns checkpoint_3_pending immediately)
+checkpoint_3_pending
+  ↓ (POST /approve/checkpoint_3)
+processing (Phase 4: renderer → upload revised output.docx)
+  ↓
+completed (revised output.docx ready, round incremented)
 ```
+
+> **Note**: `reviewer_blocked` is a possible status after Phase 3 if the content reviewer
+> flags high-severity issues. Use `POST /resolve` to resume from that state.
+> `field_editor_pending` is a legacy status that may exist on older sessions; new sessions
+> no longer enter this state.
 
 ---
 
 ## Pipeline Phases
 
-| Phase | Agents | Input | Output | Checkpoint |
-|-------|--------|-------|--------|-----------|
-| 1 | 1, 2 | CV + ToR files | cv_data.json, tor_data.json | checkpoint_1 |
-| 2 | 3 | Extracted data | mapped_cv.json | checkpoint_2 |
-| 3 | 4, 5, 6 | Mapped CV | generated_fields.json | checkpoint_3 / reviewer_blocked |
-| 4 | Renderer | Generated fields | output.docx | (complete) |
+| Phase | Agents / work | Input | Output | Halts at |
+|-------|--------------|-------|--------|----------|
+| 1 | cv_extractor + tor_summarizer (parallel) | CV + ToR files | cv_data.json, tor_data.json | checkpoint_1_pending |
+| 2 | cv_tor_mapper | Extracted data | mapped_cv.json | checkpoint_2_pending |
+| 3 | fields_generator → content_reviewer → compressor | Mapped CV | generated_fields.json (with review + compression blocks) | checkpoint_3_pending |
+| 4 | Renderer | generated_fields.json["generated"] | output.docx uploaded to Storage | completed |
+| Post-completion | field_editor (user-directed edits only, no LLM re-run of other agents) | generated_fields.json + user edit instructions | updated generated_fields.json | checkpoint_3_pending → Phase 4 |
 
 ---
 
@@ -630,8 +772,12 @@ ANTHROPIC_API_KEY=sk-ant-...
 - **JWT Token**: Obtain from Supabase Auth (`supabase.auth.getSession()`)
 - **Session ID**: UUID generated on `POST /sessions`
 - **Storage Keys**: Use with Supabase Storage signed URLs (expire in 1 hour by default)
-- **Revision Rounds**: Each comment round increments the session's `round` counter; output files are labeled `round_01_giz.docx`, `round_02_giz.docx`, etc.
-- **World Bank Format**: Not yet supported; API returns 400 if requested
+- **Revision Rounds**: Each `POST /field-edit` call increments the session's `round` counter; output files are labelled `round_01_giz.docx`, `round_02_giz.docx`, etc.
+- **Field Edit vs. Resolve**: `POST /field-edit` is for post-completion user-directed revisions (LLM-mediated, entry condition `completed`). `POST /resolve` is for unblocking a `reviewer_blocked` pipeline run (caller-provided values, no LLM). They are independent.
+- **Deprecated**: `POST /sessions/{id}/comments` is deprecated and replaced by `POST /sessions/{id}/field-edit`. The comments endpoint is kept for backward compatibility but emits `Deprecation: true`, `Sunset`, and `Link` response headers on every call.
+- **Solvability**: Every finding in `GET /review` carries `solvability: "pipeline" | "human"`. Pipeline-solvable issues can be addressed via `POST /field-edit`; human-solvable issues require recruiter intervention via `POST /resolve`.
+- **Compressor tuning**: Word-count targets and ratios come from **`FORMAT_PROFILES`** and orchestrator defaults (`PIPELINE_CONTEXT.md`). They are not end-user settings; **`POST /sessions` does not save optional `target_words` / `compression_ratio` fields to the DB** in the current implementation.
+- **World Bank Format**: Supported via `target_format: "world_bank"` (requires `templates/WB-Template.docx` alongside the existing GIZ template at runtime).
 
 ---
 

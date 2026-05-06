@@ -40,8 +40,6 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
-from pipeline.manifest import update_step
-
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -325,19 +323,18 @@ def run_field_editor(
 
 def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
     """
-    Pipeline entry point called by the orchestrator / HTTP handler.
+    Pipeline entry point called by the HTTP handler (POST /field-edit).
 
     Reads generated_fields.json, applies edits via run_field_editor(),
     writes the mutated generated dict back (preserving all top-level keys),
-    updates the manifest step, and returns (applied, skipped).
+    and returns (applied, skipped).
 
-    The caller is responsible for transitioning the DB session status.
+    field_editor has no manifest step — the caller is responsible for
+    transitioning the DB session status (set_processing before calling,
+    set_checkpoint_pending(3) after returning).
     """
-    update_step(run_dir, "field_editor", "running")
-
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():
-        update_step(run_dir, "field_editor", "failed")
         raise FileNotFoundError(
             f"generated_fields.json not found in {run_dir}. "
             "Has the pipeline completed through Phase 3 (fields_generator + content_reviewer)?"
@@ -346,7 +343,6 @@ def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
     gf = json.loads(gf_path.read_text(encoding="utf-8"))
     generated = gf.get("generated")
     if not generated:
-        update_step(run_dir, "field_editor", "failed")
         raise ValueError(
             "generated_fields.json has no 'generated' key. "
             "Has Agent 4 (Fields Generator) completed?"
@@ -355,17 +351,12 @@ def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
 
     client = Anthropic()  # reads ANTHROPIC_API_KEY from environment
 
-    try:
-        mutated, applied, skipped = run_field_editor(generated, review, edits, client)
-    except Exception:
-        update_step(run_dir, "field_editor", "failed")
-        raise
+    mutated, applied, skipped = run_field_editor(generated, review, edits, client)
 
     # Write back — preserve all top-level keys, only replace "generated"
     gf["generated"] = mutated
     gf_path.write_text(json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    update_step(run_dir, "field_editor", "done")
     log.info(
         "field_editor complete — applied=%s skipped=%s run_dir=%s",
         applied,

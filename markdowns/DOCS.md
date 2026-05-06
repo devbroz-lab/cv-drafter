@@ -4,7 +4,8 @@
 
 | Document | Location | Purpose |
 |----------|----------|---------|
-| **[API.md](./API.md)** | Root | Complete API reference with all 16 endpoints, examples, and workflows |
+| **[API.md](./API.md)** | Root | Complete API reference with field-editor workflow and endpoint examples |
+| **[FIELD_EDITOR_CONTEXT.md](./additions/FIELD_EDITOR_CONTEXT.md)** | additions/ | Design reference for the post-completion `field_editor` agent and `POST /field-edit` workflow |
 | **[README_API_DOCS.md](./ZZZZ/README_API_DOCS.md)** | ZZZZ/ | Summary and quick links for all API docs |
 | **[api_quick_reference.sh](./ZZZZ/api_quick_reference.sh)** | ZZZZ/ | Ready-to-use bash/curl commands (executable) |
 | **[api_client_example.py](./ZZZZ/api_client_example.py)** | ZZZZ/ | Python client class with full workflow example |
@@ -40,7 +41,7 @@ curl http://127.0.0.1:8000/health
 
 ## API Overview
 
-### 16 Endpoints in 4 Categories
+### Endpoints in 4 Categories
 
 #### Health (1)
 - `GET /health` — Server liveness
@@ -58,13 +59,14 @@ curl http://127.0.0.1:8000/health
 - `GET /sessions/{id}/files/tor/download-url` — Get ToR download URL
 - `GET /sessions/{id}/files/output/download-url` — Get output download URL
 
-#### Pipeline Control (6)
-- `GET /sessions/{id}/manifest` — Poll progress
+#### Pipeline Control (7)
+- `GET /sessions/{id}/manifest` — Poll step-level progress
 - `POST /sessions/{id}/approve/{checkpoint}` — Approve checkpoint
-- `GET /sessions/{id}/review` — View reviewer issues
-- `POST /sessions/{id}/resolve` — Resolve issues
-- `GET /sessions/{id}/output` — Get final data
-- `POST /sessions/{id}/comments` — Submit revision feedback
+- `GET /sessions/{id}/review` — View content reviewer issues (includes `solvability` per finding)
+- `POST /sessions/{id}/resolve` — Resolve `reviewer_blocked` state and resume compressor
+- `POST /sessions/{id}/field-edit` — Apply targeted field edits post-completion (replaces `/comments`)
+- `GET /sessions/{id}/output` — Get final generated CV data
+- `POST /sessions/{id}/comments` — *(Deprecated)* Free-text revision feedback; use `/field-edit` instead
 
 ---
 
@@ -73,28 +75,37 @@ curl http://127.0.0.1:8000/health
 ```
 queued
   ↓ (POST /start)
-processing (Phase 1: extraction)
+processing (Phase 1: cv_extractor + tor_summarizer parallel)
   ↓
 checkpoint_1_pending (Agents 1 & 2 done)
-  ↓ (POST /approve/checkpoint_1)
-processing (Phase 2: mapping)
+  ↓ (POST /tor/select-pool, then POST /approve/checkpoint_1)
+processing (Phase 2: cv_tor_mapper)
   ↓
 checkpoint_2_pending (Agent 3 done)
   ↓ (POST /approve/checkpoint_2)
-processing (Phase 3: generation → review → compression)
-  ├→ reviewer_blocked (high-severity issues)
-  │   ↓ (POST /resolve)
-  │   processing (resume compressor)
-  │   ↓
-  └→ checkpoint_3_pending (Agents 4, 5, 6 done)
-     ↓ (POST /approve/checkpoint_3)
-     processing (Phase 4: renderer)
-     ↓
-     completed (output.docx ready)
+processing (Phase 3: fields_generator → content_reviewer → compressor)
+  ↓
+checkpoint_3_pending
+  ↓ (POST /approve/checkpoint_3)
+processing (Phase 4: renderer → upload output.docx)
+  ↓
+completed (output.docx ready)
 
 Any phase → failed (exception raised)
-completed → processing (POST /comments for revision)
+
+Post-completion revision:
+completed
+  ↓ (POST /field-edit — returns checkpoint_3_pending synchronously)
+checkpoint_3_pending
+  ↓ (POST /approve/checkpoint_3)
+processing (Phase 4: re-render)
+  ↓
+completed (revised output.docx, round incremented)
 ```
+
+> `reviewer_blocked` is reachable from Phase 3 if content_reviewer flags high-severity issues.
+> Use `POST /resolve` to resume.  `field_editor_pending` is a legacy status — new sessions
+> no longer enter this state.
 
 ---
 
@@ -131,13 +142,8 @@ client.approve_checkpoint(session_id, "checkpoint_1")
 client.wait_for_checkpoint(session_id, "checkpoint_2")
 client.approve_checkpoint(session_id, "checkpoint_2")
 
-# 6. Wait for checkpoint 3 (may be blocked by reviewer)
-manifest = client.get_manifest(session_id)
-if manifest["reviewer_blocked"]:
-    review = client.get_review(session_id)
-    # Fix issues...
-    client.resolve_review(session_id, force_pass=True)
-    client.wait_for_checkpoint(session_id, "checkpoint_3")
+# 6. Wait for checkpoint 3 (Phase 3 flows straight through now)
+client.wait_for_checkpoint(session_id, "checkpoint_3")
 
 # 7. Approve checkpoint 3 (triggers renderer)
 client.approve_checkpoint(session_id, "checkpoint_3")
@@ -239,7 +245,8 @@ curl -X POST "$BASE_URL/sessions/$SESSION_ID/approve/checkpoint_1" \
 }
 ```
 
-### Submit Revision (`POST /sessions/{id}/comments`)
+### Submit Revision (`POST /sessions/{id}/comments`) *(Deprecated)*
+> Use `POST /sessions/{id}/field-edit` for post-completion revisions.
 ```json
 {
   "comment": "Please emphasize renewable energy expertise more"

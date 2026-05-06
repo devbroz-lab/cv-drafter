@@ -208,6 +208,13 @@ If `reviewer_blocked=true`:
 **Route**: `/output/{session_id}`
 **Triggered when**: `status == "completed"`
 
+### Edit Document Flow (NEW)
+- "Edit Document" button appears at completed status
+- Opens field_edit panel in SessionWorkspacePage
+- Can edit any field before downloading
+- On save: POST /field-edit returns checkpoint_3_pending
+- No polling needed (synchronous)
+
 ### User Inputs Required
 
 1. **Review Output** (read-only display)

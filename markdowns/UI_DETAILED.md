@@ -699,3 +699,8 @@ App
 | Revision submitted | Success | "Round 2 queued. Refreshing..." |
 | Download expired | Error | "Download link expired. Refreshing..." |
 
+### Composite Cell UX
+- FieldSelectorTooltip appears on hover before instruction input
+- Tooltip portal renders at cursor position
+- Composite cells: giz_education, giz_countries, giz_projects (cells 1, 5) |
+
