@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_storage_bucket: str = "cv-uploads"
     api_secret_key: str = ""
+    jwt_secret: str = ""
+    jwt_refresh_secret: str = ""
+    access_token_expires_minutes: int = 15
+    refresh_token_expires_days: int = 7
+    google_client_id: str = ""
+    microsoft_client_id: str = ""
     debug: bool = False
 
     # Anthropic — required for the 6-agent CV pipeline

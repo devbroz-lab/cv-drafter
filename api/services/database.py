@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from api.config import settings
@@ -273,3 +274,80 @@ def update_session_storage_keys(
     if not result.data:
         return None
     return result.data[0]
+
+
+# ── App auth helpers (additive tables) ────────────────────────────────────────
+
+
+def get_app_user_by_email(email: str) -> dict[str, Any] | None:
+    result = (
+        get_service_client()
+        .table("app_users")
+        .select("*")
+        .eq("email", email.lower())
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+def get_app_user_by_id(user_id: str) -> dict[str, Any] | None:
+    result = get_service_client().table("app_users").select("*").eq("id", user_id).limit(1).execute()
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+def create_app_user(
+    *,
+    email: str,
+    password_hash: str | None,
+    google_id: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "email": email.lower(),
+        "password_hash": password_hash,
+        "google_id": google_id,
+    }
+    result = get_service_client().table("app_users").insert(payload).execute()
+    if not result.data:
+        raise RuntimeError("Supabase insert returned no app_users row")
+    return result.data[0]
+
+
+def update_app_user(user_id: str, values: dict[str, Any]) -> dict[str, Any] | None:
+    result = get_service_client().table("app_users").update(values).eq("id", user_id).execute()
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+def save_refresh_token(*, user_id: str, token: str, expires_at_iso: str) -> None:
+    payload = {
+        "user_id": user_id,
+        "token": token,
+        "expires_at": expires_at_iso,
+    }
+    get_service_client().table("app_refresh_tokens").insert(payload).execute()
+
+
+def find_valid_refresh_token(token: str) -> dict[str, Any] | None:
+    now_iso = datetime.now(UTC).isoformat()
+    result = (
+        get_service_client()
+        .table("app_refresh_tokens")
+        .select("*")
+        .eq("token", token)
+        .gt("expires_at", now_iso)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+def delete_refresh_token(token: str) -> None:
+    get_service_client().table("app_refresh_tokens").delete().eq("token", token).execute()
