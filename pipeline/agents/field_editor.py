@@ -216,7 +216,6 @@ CONTEXT FIELDS (provided in the user message)
                    grounding to understand the expert's background.\
 """
 
-
 def _field_key_from_path(field_path: str) -> str:
     """
     Strip list indices from a field path to get the logical field key.
