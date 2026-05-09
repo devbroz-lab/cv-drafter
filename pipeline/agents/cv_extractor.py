@@ -22,7 +22,7 @@ from pipeline.utils import strip_code_fences
 client = Anthropic()
 
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT_A1 = """
 You are the CV Extractor agent in a document processing pipeline. Your sole job
 is to read a CV document and extract its contents into a structured JSON object
 that strictly conforms to the CVData schema.
@@ -42,8 +42,15 @@ that strictly conforms to the CVData schema.
 - Extract only what is explicitly present in the CV text.
 - Do not infer, assume, or generate content.
 - If a field is not stated, leave it as "" or [].
-- Exception 1: if `present_position` is not explicitly stated, set it to the
-  job title from the most recent entry in `relevant_projects`.
+- Exception 1: if `present_position` is not explicitly stated, derive it from
+  `relevant_projects` using the following priority order:
+    1. Projects with `date_to` equal to "Present" (case-insensitive) rank above
+       all dated entries.
+    2. Among multiple "Present" entries, use the one with the latest `date_from`.
+    3. Among dated entries (no "Present"), use the one with the latest `date_to`.
+    4. If still tied after all of the above, use the first entry in document order.
+  Use the `positions_held` field of the chosen project as `present_position`.
+  If `positions_held` is also empty, use `project_name` as a fallback.
 - Exception 2: derive `full_name` by joining `first_names` + `family_name`
   if a single full-name string is not explicitly present.
 
@@ -91,8 +98,13 @@ for the matching format below.
 - Normalise all proper nouns (names, institutions, companies, countries) to
   Title Case.
 - Strip all leading/trailing whitespace from every string value.
-- Fix obvious typos only where the correction is unambiguous
-  (e.g. "Grmany" → "Germany"). Do not rephrase, reword, or improve content.
+- Fix common-word typos only where the correction is completely unambiguous
+  (e.g. "teh" → "the", "recieve" → "receive", "occured" → "occurred").
+  NEVER apply typo correction to proper nouns, names, institutions, companies,
+  countries, acronyms, or any word that might be domain-specific terminology.
+  If you are uncertain whether a word is a typo or an intentional term, leave
+  it exactly as found.
+  Do not rephrase, reword, or improve content.
 
 ### Personal info
 - `title`: accept only Mr. / Mrs. / Dr. / Prof.
@@ -157,7 +169,7 @@ def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=16000,
-        system=_build_prompt(SYSTEM_PROMPT),
+        system=_build_prompt(SYSTEM_PROMPT_A1),
         messages=[
             {
                 "role": "user",

@@ -17,12 +17,46 @@ from anthropic import Anthropic
 
 from models import FORMAT_PROFILES, CVData
 from pipeline.manifest import update_step
+from pipeline.precompute_utils import compute_project_duration, compute_project_year
 from pipeline.utils import resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
 
 
-SYSTEM_PROMPT = """
+# ---------------------------------------------------------------------------
+# P15 / P2-A4: pre-compute project dates before sending to the LLM
+# ---------------------------------------------------------------------------
+
+def _precompute_project_dates(cv_data: dict) -> dict:
+    """
+    Walk cv_data["relevant_projects"] and fill in empty ``duration`` and
+    ``year`` fields using the deterministic Python helpers.
+
+    Only fills fields that are currently empty string "".  Never overwrites
+    a non-empty value (i.e. if Agent 1 already extracted a duration, keep it).
+
+    Returns a shallow-copied cv_data dict with the updated projects list.
+    """
+    import copy
+    result = copy.deepcopy(cv_data)
+    for project in result.get("relevant_projects", []):
+        date_from = project.get("date_from", "")
+        date_to = project.get("date_to", "")
+
+        if not project.get("duration", ""):
+            computed = compute_project_duration(date_from, date_to)
+            if computed:
+                project["duration"] = computed
+
+        if not project.get("year", ""):
+            computed = compute_project_year(date_from, date_to)
+            if computed:
+                project["year"] = computed
+
+    return result
+
+
+SYSTEM_PROMPT_A4 = """
 You are the Fields Generator agent in a document processing pipeline. You
 receive a filtered CVData object, a DistilledToR object, a FormatProfile,
 and pipeline params. Your job is to:
@@ -63,11 +97,12 @@ grounded in evidence from the CV — you are a skilled writer, not an inventor.
 
 ### relevant_projects — empty subfields only
 For each RelevantProject, fill only fields that are empty string "":
-- `duration`: calculate from date_from and date_to if both are present.
-  Format as "N months" or "N years" rounded to nearest whole unit.
-  If either date is missing or "Present", leave as "".
-- `year`: derive as "YYYY" or "YYYY–YYYY" from date_from and date_to.
-  Used by some renderers. Leave as "" if dates are missing.
+- `duration`: the pipeline has pre-computed this value from date_from and
+  date_to before calling you. The pre-filled value is already present in the
+  `<cv_data>` you received. Copy it exactly as received — do NOT recalculate,
+  modify, or derive your own duration value.
+- `year`: the pipeline has pre-computed this value as well. Copy it exactly
+  as received — do NOT recalculate or derive your own year string.
 - All other project fields: never fill — if empty, leave empty.
 
 ### All other CVData fields
@@ -88,9 +123,11 @@ Each bullet becomes one GeneratedField with field_key="key_qualifications".
 #### How many bullets to generate
 - Read the proposed_position and the ToR's key_tasks and required_competencies.
 - Generate one bullet per major competency cluster the ToR requires.
-- Minimum 3 bullets, maximum 6 bullets.
-- Do not pad — if only 3 clusters are clearly required, write 3 strong bullets,
-  not 5 weak ones.
+- Aim for 3–6 bullets.
+- If the ToR clearly contains fewer than 3 distinct competency clusters, generate
+  one bullet per cluster — do not pad with weak or invented content.
+- Minimum is 1 strong, well-grounded bullet. Maximum is 6.
+- Do not pad — a focused set of 2 strong bullets is better than 4 weak ones.
 
 #### What each bullet must do
 - Address a specific requirement from the ToR (key_tasks, required_competencies,
@@ -211,6 +248,9 @@ def run(run_dir: Path) -> CVData:
 
     format_profile = FORMAT_PROFILES[donor]
 
+    # P15/P2-A4: pre-fill duration and year on all projects before sending to LLM
+    cv_data = _precompute_project_dates(cv_data)
+
     user_message = (
         f"<cv_data>\n{json.dumps(cv_data, indent=2)}\n</cv_data>\n\n"
         f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
@@ -222,7 +262,7 @@ def run(run_dir: Path) -> CVData:
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT_A4,
         messages=[{"role": "user", "content": user_message}],
     )
 

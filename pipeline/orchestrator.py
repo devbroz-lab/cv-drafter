@@ -22,6 +22,7 @@ Each phase:
 
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -244,6 +245,41 @@ async def run_phase3_resume(*, session_id: str) -> None:
         set_failed(session_id, str(exc))
 
 
+def _build_field_editor_context(run_dir: Path, row: dict) -> tuple[str, dict]:
+    """
+    Build the donor string and cv_context dict for the field editor.
+
+    Returns (donor, cv_context) where:
+      donor      — normalised format string ("giz" or "world_bank")
+      cv_context — {"proposed_position": str, "top_projects": list[str]}
+                   top_projects is capped at 3 entries (project_name only)
+    """
+    donor = (row.get("target_format") or "giz").strip().lower().replace(" ", "_")
+
+    # Load generated data for the cv_context snippet
+    gf_path = run_dir / "generated_fields.json"
+    cv_context: dict = {"proposed_position": "", "top_projects": []}
+    if gf_path.exists():
+        try:
+            gf = json.loads(gf_path.read_text(encoding="utf-8"))
+            generated = gf.get("generated", {})
+            proposed = generated.get("proposed_position", "") or ""
+            # Cap proposed_position length to avoid bloating the prompt
+            if len(proposed) > 150:
+                proposed = proposed[:147] + "..."
+            cv_context["proposed_position"] = proposed
+            projects = generated.get("relevant_projects", [])
+            cv_context["top_projects"] = [
+                p.get("project_name", "")
+                for p in projects[:3]
+                if p.get("project_name")
+            ]
+        except Exception:
+            pass  # context is advisory — failure should not block edits
+
+    return donor, cv_context
+
+
 def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[str], list[str]]:
     """
     Apply user-directed field edits to generated_fields.json and transition
@@ -261,8 +297,12 @@ def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[s
     Raises on hard failure; caller should catch and call set_failed().
     """
     run_dir = get_run_dir(session_id)
+    row = get_session_row(session_id) or {}
 
-    applied, skipped = field_editor.run(run_dir, edits)
+    # P5: build donor and cv_context for field editor context enrichment
+    donor, cv_context = _build_field_editor_context(run_dir, row)
+
+    applied, skipped = field_editor.run(run_dir, edits, donor=donor, cv_context=cv_context)
 
     # Reset checkpoint_3 and renderer manifest steps so Phase 4 will re-run
     # on the next POST /approve/checkpoint_3.

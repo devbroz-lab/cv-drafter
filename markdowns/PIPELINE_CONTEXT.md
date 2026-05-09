@@ -19,6 +19,7 @@ Compression does **not** go through this registry. How **`target_words`** and **
 
 | `pipeline/config.py` | Pipeline-wide constants: `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS`, `EXPERIENCE_GAP_BLOCK_THRESHOLD_YEARS`, `WORD_COUNT_TOLERANCE_PCT`. Imported by `content_reviewer`. |
 | `pipeline/validation.py` | Deterministic helpers used by `content_reviewer` pre/post-processing: `extract_role_tier`, `extract_required_years_for_tier`, `total_documented_years`, `cross_reference_geo_alternative`. No LLM calls. |
+| `pipeline/precompute_utils.py` | Shared pre/post-compute helpers (P2/P15/P16/P17 fixes): `count_words`, `count_words_per_field`, `count_compressible_words_total`, `compute_project_duration`, `compute_project_year`, `restore_protected_fields`. Used by `fields_generator` (date pre-fill) and `compressor` (word-count pre-compute + protected-field restore). No LLM calls. |
 
 ---
 
@@ -80,7 +81,7 @@ sequenceDiagram
 | **2** | `run_phase2` | **`cv_tor_mapper`** (`_run_if_needed` skips if manifest already `done`) | `checkpoint_2_pending` |
 | **3** | `run_phase3` | **`fields_generator`** → **`content_reviewer`** (non-blocking; records review in `generated_fields.json`) → **`compressor`** | `checkpoint_3_pending` |
 | **3 resume** | `run_phase3_resume` | Compressor path only (`_run_compressor_and_halt`); called by **`POST /resolve`** after reviewer block is cleared | `checkpoint_3_pending` |
-| **Post-completion** | `run_field_editor_task` (synchronous, called inline by HTTP handler) | **`field_editor`** applies user-directed edits to `generated_fields.json["generated"]`; resets `checkpoint_3` + `renderer` manifest steps | `checkpoint_3_pending` |
+| **Post-completion** | `run_field_editor_task` (synchronous, called inline by HTTP handler) | **`field_editor`** applies user-directed edits to `generated_fields.json["generated"]` with context enrichment (donor format, word limits, CV context snippet); resets `checkpoint_3` + `renderer` manifest steps | `checkpoint_3_pending` |
 | **4** | `run_phase4` | Always calls **`set_processing`** first. If manifest **`renderer`** is already **`done`**, logs a warning and **`return`**s: **no upload**, **no `set_done`**, status stays **`processing`** (see **`reset_stale_processing_sessions`** on startup). Otherwise: **`update_step(renderer, running)`** → **`get_renderer(target_format)(session_id)`** → **`update_step(renderer, done)`** → **`upload_bytes`** → **`update_session_storage_keys(..., output_storage_key=...)`** → **`set_done`** (`status=completed`, `output_file_path` set to the same storage key string). | — |
 
 **Manifest step order** ([`STEP_ORDER`](pipeline/manifest.py)):  
