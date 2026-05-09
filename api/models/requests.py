@@ -242,12 +242,36 @@ class FieldEditRequest(BaseModel):
     )
 
 
+class FieldEditSkip(BaseModel):
+    """A single edit that was not applied, with the reason it was skipped.
+
+    Reasons are capped at 200 characters (with a trailing ellipsis when
+    truncated) so frontends can display them inline without wrapping concerns.
+
+    Reason categories:
+      - "path resolution failed: ..."  — the field_path could not be traversed
+      - "resolved value is <type>, not a scalar. ..."  — path points to a list/dict
+      - "API or parse error: ..."  — Claude call failed or returned bad JSON
+      - "<LLM-supplied sentence>"  — agent chose to skip (action = "skip")
+      - "write-back failed: ..."  — value resolved and edited but could not be written
+    """
+
+    path: str = Field(description="The field_path that was not applied")
+    reason: str = Field(
+        description=(
+            "Human-readable explanation, max 200 chars. "
+            "Truncated with \u2026 if the source was longer."
+        ),
+        max_length=201,  # 200 chars + 1 for the ellipsis character
+    )
+
+
 class FieldEditResponse(BaseModel):
     session_id: str
     status: SessionStatus
     round: int
     applied: list[str]
-    skipped: list[str]
+    skipped: list[FieldEditSkip]  # was list[str] — see BREAKING CHANGE note in API.md
     message: str
 
 

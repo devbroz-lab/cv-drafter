@@ -507,6 +507,12 @@ Resolve high-severity content issues and resume the pipeline.
 ### Field Edit Workflow
 
 #### `POST /sessions/{session_id}/field-edit`
+
+> **Breaking change**: The `skipped` array now contains **objects** (`{"path": str, "reason": str}`)
+> rather than plain strings. Frontend clients must be updated to read `item.path` and `item.reason`
+> instead of treating each element as a bare path string.
+> See `additions/FRONTEND_SKIP_REASONS_CONTEXT.md` for the full migration guide.
+
 Apply targeted natural-language edits to specific CV fields after the pipeline
 has completed. Replaces the deprecated `POST /comments` revision workflow.
 
@@ -517,7 +523,7 @@ via an individual LLM call, writes the result back to
 approval before the renderer produces a new `output.docx`.
 
 **Preconditions**:
-- Session status must be `completed`
+- Session status must be `completed` or `checkpoint_3_pending`
 
 **Request Body** (application/json):
 ```json
@@ -546,26 +552,35 @@ approval before the renderer produces a new `output.docx`.
   "session_id": "20260425_143022_a1b2",
   "status": "checkpoint_3_pending",
   "round": 2,
-  "applied": ["key_qualifications[2]", "relevant_projects[1].location"],
-  "skipped": [],
+  "applied": ["relevant_projects[1].location"],
+  "skipped": [
+    {
+      "path": "key_qualifications[2]",
+      "reason": "Instruction requires adding a certification not present in the original value."
+    }
+  ],
   "message": "Field edits applied. Awaiting checkpoint_3 approval before re-render."
 }
 ```
 
 **Response fields**:
 - `applied`: Paths where the agent successfully wrote a new value
-- `skipped`: Paths the agent could not resolve or could not apply without fabricating information; displayed in the UI but do not halt the pipeline
+- `skipped`: Array of objects, each with `path` and `reason` keys, for edits that were not
+  applied. Reason is capped at 200 characters with a trailing `…` if the source was longer.
+  Reason categories: path resolution failure, non-scalar target, LLM skip decision, API error,
+  write-back failure. The pipeline proceeds regardless.
 - `round`: The new round number after incrementing
 
 **Behaviour**:
 - Increments the session `round` counter immediately
 - Runs `field_editor` agent sequentially across all edits (each edit operates on the already-patched state from the previous edit)
+- Agent receives word-limit, donor format, and CV context to guide each edit
 - Halts at `checkpoint_3_pending` — approve with `POST /approve/checkpoint_3` to trigger re-render
 - Re-render produces `round_NN_{target_format}.docx` uploaded to Supabase Storage
 - Does **not** re-run `fields_generator`, `content_reviewer`, or `compressor`
 
 **Errors**:
-- `409`: Session not in `completed` state
+- `409`: Session not in `completed` or `checkpoint_3_pending` state
 - `422`: `edits` array is empty, exceeds 5 items, or an individual edit fails field validation
 
 ---

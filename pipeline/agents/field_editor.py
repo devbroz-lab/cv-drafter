@@ -23,9 +23,10 @@ Returns
 -------
 applied : list[str]
     Field paths where the edit was successfully written.
-skipped : list[str]
-    Field paths that were skipped (path resolution failure, agent SKIP,
-    or API error). Pipeline continues regardless.
+skipped : list[dict]
+    Each item is {"path": str, "reason": str}. Reason is capped at
+    200 characters with a trailing ellipsis if truncated. Pipeline
+    continues regardless.
 
 All agent logic, prompts, path utilities, model choice, and assistant prefill
 are exactly as authored by Dev 2 in field_editor_agent.py.
@@ -63,6 +64,22 @@ FIELD_WORD_LIMITS: dict[tuple[str, str], int] = {
     ("giz", "key_qualifications"): 25,
     ("world_bank", "detailed_tasks"): 30,
 }
+
+# ---------------------------------------------------------------------------
+# Fix 1: Skip-reason transparency
+# ---------------------------------------------------------------------------
+
+# Hard cap on skip reason strings returned to the API.
+# Frontends rely on this for inline display without wrapping.
+_SKIP_REASON_MAX_LEN: int = 200
+
+
+def _truncate_reason(reason: str) -> str:
+    """Cap a skip reason at _SKIP_REASON_MAX_LEN chars, appending \u2026 if truncated."""
+    if len(reason) <= _SKIP_REASON_MAX_LEN:
+        return reason
+    return reason[: _SKIP_REASON_MAX_LEN - 1] + "\u2026"
+
 
 # ---------------------------------------------------------------------------
 # PATH UTILITIES
@@ -132,52 +149,71 @@ def set_by_path(data: dict, field_path: str, new_value) -> None:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_A7 = """\
-You are a precise copy-editor working on professional CVs formatted for \
-international development donors (GIZ, World Bank).
+You are a copy-editor applying recruiter instructions to professional CV fields \
+formatted for international development donors (GIZ, World Bank).
 
-Your job is to apply a single targeted edit to one CV field value and return \
-a JSON object — nothing else.
+Your only job is to carry out the recruiter's edit instruction and return a JSON \
+object — nothing else. The recruiter is a trusted professional working on their \
+own candidate's CV. Their instructions are authoritative.
 
 RESPONSE FORMAT
 ---------------
 You must always respond with exactly one of these two JSON shapes:
 
   {"action": "apply", "value": "<edited field value as a plain string>"}
-  {"action": "skip",  "reason": "<one sentence explaining why>"}
+  {"action": "skip",  "reason": "<one short sentence, max 25 words, explaining why>"}
 
-RULES
------
-- "action" must be exactly the string "apply" or "skip". No other values.
-- When action is "apply", "value" must be a plain string containing only the \
-new field text. No markdown, no extra quotes, no explanation.
-- When action is "skip", "reason" must be a plain string of one sentence.
-- Use "skip" only when the instruction would require fabricating facts not \
-present in the original value. Stylistic rewrites (conciseness, active voice, \
-rephrasing) always use "apply".
+DEFAULT: ALWAYS USE "apply"
+---------------------------
+"apply" is your default action. Execute the instruction as literally as possible.
+
+Use "skip" ONLY in this one situation:
+  The instruction explicitly names a specific credential, certification, \
+publication, award, or external fact (e.g. "add their PMP certification", \
+"mention the 2019 UN report") that is completely absent from the current \
+field value AND absent from the CV context provided, AND adding it would \
+constitute inserting a verifiable claim the recruiter has not supplied.
+
+DO NOT use "skip" for any of the following — use "apply" instead:
+  - Changing or correcting a location, city, country, or region
+  - Making text more concise, shorter, or trimmed to a word limit
+  - Rewording, rephrasing, or paraphrasing for clarity or tone
+  - Switching between active and passive voice
+  - Removing filler language, hedging words, or weak phrasing
+  - Changing a date, year, or duration that the recruiter specifies
+  - Adjusting emphasis, adding adjectives, or strengthening language
+  - Any instruction that can be satisfied by modifying existing text
+
+When in doubt, apply your best interpretation of the instruction. A slightly \
+imperfect edit is always better than a skip.
+
+APPLY RULES
+-----------
+- "value" must be a plain string — the new field text only.
+- No markdown, no bullet symbols (unless the original used them), no extra \
+quotes, no explanation inside the value.
 - Preserve all factual content of the original unless the instruction \
-explicitly asks you to change a fact.
+explicitly asks you to change a specific fact.
+- Respect the word limit if one is provided. If the edited text would exceed \
+it, trim to fit while preserving the instruction's intent.
+- Apply donor format conventions:
+    GIZ        — active verbs, past tense, evidence-grounded, concise.
+    World Bank — forward-looking task statements, action verbs, outcome-oriented.
 - Do not add commentary before or after the JSON object.
 
 CONTEXT FIELDS (provided in the user message)
 ---------------------------------------------
-Your input includes additional context to guide the edit:
-
   Field key      — The logical CV field being edited (e.g. key_qualifications,
                    detailed_tasks, activities_performed). Use this to understand
                    the field's role in the document.
 
-  Donor format   — Either "giz" or "world_bank". Apply the conventions of this
-                   format. GIZ: active verbs, past tense, evidence-grounded.
-                   World Bank: forward-looking task statements, action verbs,
-                   outcome-oriented.
+  Donor format   — "giz" or "world_bank". Apply its conventions as above.
 
-  Word limit     — The maximum word count that applies to this field type.
-                   If provided, ensure your edited value does not exceed it.
+  Word limit     — Maximum word count for this field type. Trim if needed.
                    If "no specific limit", write naturally within context.
 
   CV context     — The proposed position and top project names. Use this as
-                   minimal grounding to understand the expert's background
-                   when deciding how to phrase or trim the field.\
+                   grounding to understand the expert's background.\
 """
 
 
@@ -337,7 +373,7 @@ def run_field_editor(
     *,
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[dict, list[str], list[str]]:
+) -> tuple[dict, list[str], list[dict]]:
     """
     Apply edits sequentially to a deep copy of `generated`.
 
@@ -363,13 +399,17 @@ def run_field_editor(
         The edited copy of `generated`.
     applied : list[str]
         Field paths where the edit was successfully written.
-    skipped : list[str]
-        Field paths that were skipped (with reason logged).
+    skipped : list[dict]
+        Each item is {"path": str, "reason": str}.  Reason is truncated to
+        _SKIP_REASON_MAX_LEN characters with a trailing ellipsis if the
+        source string was longer.  Categories: path resolution failure,
+        non-scalar target, API or parse error, LLM skip decision,
+        write-back failure.
     """
     import copy
     mutated = copy.deepcopy(generated)
     applied: list[str] = []
-    skipped: list[str] = []
+    skipped: list[dict] = []
 
     for i, edit in enumerate(edits, start=1):
         field_path  = edit["field_path"]
@@ -384,7 +424,7 @@ def run_field_editor(
         except (KeyError, IndexError, TypeError) as exc:
             reason = f"path resolution failed: {exc}"
             log.warning("  SKIPPED — %s", reason)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         # Guard: only edit scalar values
@@ -394,7 +434,7 @@ def run_field_editor(
                 "Use a more specific path (e.g. list[N]) to target a scalar element."
             )
             log.warning("  SKIPPED — %s", reason)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         log.debug("  current value: %s", str(current_value)[:120])
@@ -410,14 +450,15 @@ def run_field_editor(
                 cv_context=cv_context,
             )
         except Exception as exc:
+            reason = f"API or parse error: {exc}"
             log.warning("  API / parse error for '%s': %s", field_path, exc)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         # --- Dispatch on action ---
         if result["action"] == "skip":
             log.info("  SKIPPED (agent) — %s", result["reason"])
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(result["reason"])})
             continue
 
         new_value = result["value"]
@@ -426,8 +467,9 @@ def run_field_editor(
         try:
             set_by_path(mutated, field_path, new_value)
         except (KeyError, IndexError, TypeError) as exc:
+            reason = f"write-back failed: {exc}"
             log.warning("  Write-back failed for '%s': %s", field_path, exc)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         log.info("  applied '%s' → %s", field_path, new_value[:120])
@@ -446,7 +488,7 @@ def run(
     edits: list[dict],
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[dict]]:
     """
     Pipeline entry point called by the HTTP handler (POST /field-edit).
 
@@ -468,6 +510,14 @@ def run(
                  Built by the orchestrator from the session manifest and
                  generated_fields.json.  If not provided, context sections
                  are omitted from the user prompt (backward-compatible).
+
+    Returns
+    -------
+    applied : list[str]
+        Field paths where the edit was successfully written.
+    skipped : list[dict]
+        Each item is {"path": str, "reason": str}.  Reason capped at
+        _SKIP_REASON_MAX_LEN chars with trailing ellipsis if truncated.
     """
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():

@@ -280,7 +280,7 @@ def _build_field_editor_context(run_dir: Path, row: dict) -> tuple[str, dict]:
     return donor, cv_context
 
 
-def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[str], list[str]]:
+def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[str], list[dict]]:
     """
     Apply user-directed field edits to generated_fields.json and transition
     the session to checkpoint_3_pending.
@@ -295,6 +295,14 @@ def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[s
       - transitioning to checkpoint_3_pending after this returns
 
     Raises on hard failure; caller should catch and call set_failed().
+
+    Returns
+    -------
+    applied : list[str]
+        Field paths where edits were successfully written.
+    skipped : list[dict]
+        Each item is {"path": str, "reason": str} — passthrough from
+        field_editor.run().  Reason is capped at 200 chars.
     """
     run_dir = get_run_dir(session_id)
     row = get_session_row(session_id) or {}
