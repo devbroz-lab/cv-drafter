@@ -23,9 +23,10 @@ Returns
 -------
 applied : list[str]
     Field paths where the edit was successfully written.
-skipped : list[str]
-    Field paths that were skipped (path resolution failure, agent SKIP,
-    or API error). Pipeline continues regardless.
+skipped : list[dict]
+    Each item is {"path": str, "reason": str}. Reason is capped at
+    200 characters with a trailing ellipsis if truncated. Pipeline
+    continues regardless.
 
 All agent logic, prompts, path utilities, model choice, and assistant prefill
 are exactly as authored by Dev 2 in field_editor_agent.py.
@@ -63,6 +64,22 @@ FIELD_WORD_LIMITS: dict[tuple[str, str], int] = {
     ("giz", "key_qualifications"): 25,
     ("world_bank", "detailed_tasks"): 30,
 }
+
+# ---------------------------------------------------------------------------
+# Fix 1: Skip-reason transparency
+# ---------------------------------------------------------------------------
+
+# Hard cap on skip reason strings returned to the API.
+# Frontends rely on this for inline display without wrapping.
+_SKIP_REASON_MAX_LEN: int = 200
+
+
+def _truncate_reason(reason: str) -> str:
+    """Cap a skip reason at _SKIP_REASON_MAX_LEN chars, appending \u2026 if truncated."""
+    if len(reason) <= _SKIP_REASON_MAX_LEN:
+        return reason
+    return reason[: _SKIP_REASON_MAX_LEN - 1] + "\u2026"
+
 
 # ---------------------------------------------------------------------------
 # PATH UTILITIES
@@ -175,10 +192,6 @@ APPLY RULES
 - "value" must be a plain string — the new field text only.
 - No markdown, no bullet symbols (unless the original used them), no extra \
 quotes, no explanation inside the value.
-- If the current field value is empty, treat the instruction as a request to
-  populate the field from scratch using the CV context provided. Write a value
-  consistent with the proposed position, donor format, and word limit. Do not
-  skip on the basis of an empty starting value alone.
 - Preserve all factual content of the original unless the instruction \
 explicitly asks you to change a specific fact.
 - Respect the word limit if one is provided. If the edited text would exceed \
@@ -359,7 +372,7 @@ def run_field_editor(
     *,
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[dict, list[str], list[str]]:
+) -> tuple[dict, list[str], list[dict]]:
     """
     Apply edits sequentially to a deep copy of `generated`.
 
@@ -385,13 +398,17 @@ def run_field_editor(
         The edited copy of `generated`.
     applied : list[str]
         Field paths where the edit was successfully written.
-    skipped : list[str]
-        Field paths that were skipped (with reason logged).
+    skipped : list[dict]
+        Each item is {"path": str, "reason": str}.  Reason is truncated to
+        _SKIP_REASON_MAX_LEN characters with a trailing ellipsis if the
+        source string was longer.  Categories: path resolution failure,
+        non-scalar target, API or parse error, LLM skip decision,
+        write-back failure.
     """
     import copy
     mutated = copy.deepcopy(generated)
     applied: list[str] = []
-    skipped: list[str] = []
+    skipped: list[dict] = []
 
     for i, edit in enumerate(edits, start=1):
         field_path  = edit["field_path"]
@@ -406,7 +423,7 @@ def run_field_editor(
         except (KeyError, IndexError, TypeError) as exc:
             reason = f"path resolution failed: {exc}"
             log.warning("  SKIPPED — %s", reason)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         # Guard: only edit scalar values
@@ -416,7 +433,7 @@ def run_field_editor(
                 "Use a more specific path (e.g. list[N]) to target a scalar element."
             )
             log.warning("  SKIPPED — %s", reason)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         log.debug("  current value: %s", str(current_value)[:120])
@@ -432,14 +449,15 @@ def run_field_editor(
                 cv_context=cv_context,
             )
         except Exception as exc:
+            reason = f"API or parse error: {exc}"
             log.warning("  API / parse error for '%s': %s", field_path, exc)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         # --- Dispatch on action ---
         if result["action"] == "skip":
             log.info("  SKIPPED (agent) — %s", result["reason"])
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(result["reason"])})
             continue
 
         new_value = result["value"]
@@ -448,8 +466,9 @@ def run_field_editor(
         try:
             set_by_path(mutated, field_path, new_value)
         except (KeyError, IndexError, TypeError) as exc:
+            reason = f"write-back failed: {exc}"
             log.warning("  Write-back failed for '%s': %s", field_path, exc)
-            skipped.append(field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
             continue
 
         log.info("  applied '%s' → %s", field_path, new_value[:120])
@@ -468,7 +487,7 @@ def run(
     edits: list[dict],
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[dict]]:
     """
     Pipeline entry point called by the HTTP handler (POST /field-edit).
 
@@ -490,6 +509,14 @@ def run(
                  Built by the orchestrator from the session manifest and
                  generated_fields.json.  If not provided, context sections
                  are omitted from the user prompt (backward-compatible).
+
+    Returns
+    -------
+    applied : list[str]
+        Field paths where the edit was successfully written.
+    skipped : list[dict]
+        Each item is {"path": str, "reason": str}.  Reason capped at
+        _SKIP_REASON_MAX_LEN chars with trailing ellipsis if truncated.
     """
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():
