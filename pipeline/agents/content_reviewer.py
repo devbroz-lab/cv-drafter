@@ -306,6 +306,79 @@ unverifiable if no evidence exists across ALL of the above fields combined.
 - Do not flag detailed_tasks with source='tor' in World Bank CVs as
   unverifiable claims — they are prospective role task descriptions.
 
+## Pre-computed context
+The `<pre_computed>` block in your input contains the following Python-computed
+values.  Use them as described — do NOT independently recalculate them.
+
+### Fields and how to use them
+
+`donor` (str)
+  The donor format: "giz" or "world_bank".  Use to apply format-specific rules
+  (e.g. WB FORMAT RULE for source='tor' tasks).
+
+`proposed_position` (str)
+  The position title from the pipeline params (not extracted from the CV).
+
+`tier` (str — "team_lead", "expert", or "")
+  The heuristic role tier derived from proposed_position and category.
+  Use to calibrate leadership-language expectations:
+  - "team_lead": strong leadership verbs ("Led", "Directed", "Managed") are
+    appropriate and should NOT be flagged.  Passive or junior verbs
+    ("supported", "assisted") are weak — flag as low severity.
+  - "expert": individual-contributor framing is correct.
+
+`required_experience_years` (int)
+  Minimum years of sector experience the ToR requires for this tier.
+  Derived from the ToR text; falls back to tier defaults (team_lead=10, expert=5).
+
+`documented_total_years` (float)
+  Total documented years across ALL relevant_projects (overlapping roles not
+  de-duplicated — this is a conservative lower bound).
+
+`documented_energy_years` (float)
+  Total documented years in energy/electricity-sector projects only.
+  This is the value compared against `required_experience_years`.
+
+`experience_gap_years` (float)
+  = max(0, required_experience_years − documented_energy_years).
+  A value > 0 means the candidate may fall short of the sector requirement.
+
+  If `experience_gap_years > 0` AND `tier == "team_lead"`:
+    - Acknowledge that a gap exists.
+    - Do NOT independently calculate or re-flag the gap as a separate finding —
+      Python post-processing will inject a standardised high_severity finding
+      automatically.  Producing your own gap finding risks duplication or
+      conflicting wording.
+    - Use the gap magnitude to calibrate how strictly you apply geographic
+      and competency checks: a large gap warrants stricter scrutiny of whether
+      the candidate's non-energy experience genuinely covers ToR competencies.
+
+`geographic_alternative` (dict)
+  Contains:
+    required_regions   : list[str] — geographic requirements from the ToR
+    candidate_countries: list[str] — candidate's documented countries
+    direct_match       : bool      — whether any overlap exists
+    notes              : str       — human-readable summary
+
+  Use to inform the geographic gap check:
+  - If `direct_match` is true, the candidate has documented experience in a
+    required country — do NOT flag as a geographic gap.
+  - If `direct_match` is false AND `required_regions` is non-empty, flag as
+    high severity with solvability "human" (only a recruiter can confirm
+    alternative pathways).
+  - If `required_regions` is empty, no geographic requirement was found in the
+    ToR — do not flag a geographic gap.
+
+## Auto-fix note
+Low-severity issues are fixed inline in the `data` block before the review is
+finalised.  These fixes are applied exactly once and are not re-reviewed.
+Therefore:
+- Prefer the minimal rewrite that resolves the flagged issue.
+- Never introduce new claims, expand the scope of a statement, or change
+  meaning beyond what is necessary to fix the specific problem.
+- If you are uncertain whether a fix would introduce new content, prefer
+  flagging as high severity with solvability "human" instead.
+
 ## Inputs
 The user message will contain:
   <cv_data>             — generated CVData from generated_fields.json    </cv_data>

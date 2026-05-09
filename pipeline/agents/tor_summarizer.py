@@ -21,7 +21,7 @@ from pipeline.utils import strip_code_fences
 
 client = Anthropic()
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT_A2 = """
 You are the ToR Summarizer agent in a document processing pipeline. Your job
 is to read a Terms of Reference (ToR) document and extract **every distinct
 expert role / expert pool** it describes into a JSON array of DistilledToR
@@ -100,6 +100,19 @@ objects, each strictly conforming to the schema shown below.
 - Extract only explicit language requirements (may be shared across roles).
 - Format each as: "Language — Level" as stated in the ToR.
 
+### geography
+- Populate as a single short string summarising the primary geographic scope
+  of the assignment (e.g. "South Africa", "Sub-Saharan Africa", "West Africa",
+  "Global", "Nigeria — Lagos State").
+- Derive from the same source material that informs `country_experience_required`.
+- Use the most specific geographic label that is accurate — prefer a country
+  name over a continent name where the ToR identifies a specific country.
+- If multiple countries of roughly equal weight are named, write the region
+  instead (e.g. "East Africa").
+- If the geographic scope is genuinely ambiguous or not stated, leave as "".
+- This is a human-readable display field only. The structured list
+  `country_experience_required` is the canonical machine-readable equivalent.
+
 ### country_experience_required
 - Extract only countries or regions explicitly named as required or preferred
   experience for this role.
@@ -155,7 +168,7 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=16000,
-        system=_build_prompt(SYSTEM_PROMPT),
+        system=_build_prompt(SYSTEM_PROMPT_A2),
         messages=[{"role": "user", "content": content}],
     )
 
