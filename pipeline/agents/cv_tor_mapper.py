@@ -26,8 +26,41 @@ client = Anthropic()
 MIN_PROJECTS_TO_KEEP: int = 2
 
 
+# ---------------------------------------------------------------------------
+# P2-A3 (DEFERRED): Python pre-compute for relevance scoring
+# ---------------------------------------------------------------------------
+# TODO(P2-A3): implement keyword-overlap relevance scoring in Python so the
+# LLM selects-and-explains rather than calculates.  This stub currently returns
+# None, which means the <pre_computed> block is NOT added to the user message
+# and the existing LLM-side scoring logic continues unchanged.
+#
+# When implemented, _precompute_relevance_scores should return a dict like:
+# {
+#   "project_scores": [
+#     {
+#       "project_name": str,
+#       "keyword_overlap_score": float,   # 0.0–1.0 — sector-keyword match
+#       "country_overlap": list[str],     # matched countries from country_experience_required
+#       "duration_years": float,          # Python-computed years
+#     },
+#     ...
+#   ]
+# }
+# See additions/RELEVANCE_SCORING_DESIGN.md for the full design.
 
-SYSTEM_PROMPT = """
+def _precompute_relevance_scores(cv_data: dict, tor_data: dict) -> dict | None:
+    """
+    Pre-compute per-project relevance signals for the mapper agent.
+
+    Returns None until the full implementation is complete (see TODO above).
+    When this returns non-None, the caller will include a <pre_computed> block
+    in the user message so the LLM selects and explains rather than calculates.
+    """
+    # TODO(P2-A3): replace with real implementation
+    return None
+
+
+SYSTEM_PROMPT_A3 = """
 You are the CV to ToR Mapper agent in a document processing pipeline. You
 receive a fully extracted CVData object and a DistilledToR object. Your job
 is to score each project in the CV for relevance to the ToR, decide which
@@ -85,10 +118,14 @@ it matches the DistilledToR across four dimensions. Weight them as follows:
      Weight required_competencies twice as heavily as preferred.
 
   4. Geography match           — 15%
-     Whether the project's location matches DistilledToR.geography or
-     DistilledToR.country_experience_required.
-     Exact country match = full weight. Same region = half weight.
+     Whether the project's location or `country` field matches any entry in
+     DistilledToR.country_experience_required (the canonical list of required
+     or preferred countries/regions).
+     Exact country name match = full weight.
+     Same region or partial name overlap = half weight.
      No match = zero for this dimension.
+     Note: DistilledToR.geography is a short human-readable display string and
+     is NOT used for scoring — always use country_experience_required.
 
 ### Threshold and minimum guarantee
 - After scoring all projects, determine a dynamic threshold:
@@ -98,6 +135,7 @@ it matches the DistilledToR across four dimensions. Weight them as follows:
 - Drop all projects below the threshold.
 - Exception: always keep the top N projects by score, even if they fall
   below the threshold. N is provided in the input as `min_projects_to_keep`.
+  If `min_projects_to_keep` is not present in `<params>`, default to 2.
 - Set `kept: true` for surviving projects, `kept: false` for dropped ones.
 - Include ALL projects (kept and dropped) in `project_scores` for the
   alignment report.
@@ -158,18 +196,25 @@ def run(run_dir: Path) -> dict:
     tor_data = resolve_tor_for_agents(tor_raw, context="cv_tor_mapper.run")
     params = manifest["params"]
 
+    pre_computed = _precompute_relevance_scores(cv_data, tor_data)
+
     user_message = (
         f"<cv_data>\n{json.dumps(cv_data, indent=2)}\n</cv_data>\n\n"
         f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
         "<params>\n"
         + json.dumps({"min_projects_to_keep": MIN_PROJECTS_TO_KEEP, **params}, indent=2)
         + "\n</params>"
+        + (
+            f"\n\n<pre_computed>\n{json.dumps(pre_computed, indent=2)}\n</pre_computed>"
+            if pre_computed is not None
+            else ""
+        )
     )
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT_A3,
         messages=[{"role": "user", "content": user_message}],
     )
 

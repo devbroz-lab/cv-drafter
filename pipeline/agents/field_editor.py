@@ -46,7 +46,23 @@ log = logging.getLogger(__name__)
 # Model — Dev 2's choice: Sonnet for editing quality
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-4-20250514"
+# MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-haiku-4-5-20251001"
+
+# ---------------------------------------------------------------------------
+# P5: Word-limit table — per (donor, field_key)
+# ---------------------------------------------------------------------------
+# Keyed by (donor_format, field_key).  Donor format is the normalised string
+# ("giz" or "world_bank").  field_key is the logical field name with list
+# indices stripped.
+#
+# Values are word limits in words (matching the generation rules in Agent 4).
+# If a (donor, field_key) pair is not in this dict, no specific limit applies.
+
+FIELD_WORD_LIMITS: dict[tuple[str, str], int] = {
+    ("giz", "key_qualifications"): 25,
+    ("world_bank", "detailed_tasks"): 30,
+}
 
 # ---------------------------------------------------------------------------
 # PATH UTILITIES
@@ -115,7 +131,7 @@ def set_by_path(data: dict, field_path: str, new_value) -> None:
 # PROMPT — copied verbatim from field_editor_agent.py by Dev 2
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT_A7 = """\
 You are a precise copy-editor working on professional CVs formatted for \
 international development donors (GIZ, World Bank).
 
@@ -140,12 +156,91 @@ present in the original value. Stylistic rewrites (conciseness, active voice, \
 rephrasing) always use "apply".
 - Preserve all factual content of the original unless the instruction \
 explicitly asks you to change a fact.
-- Do not add commentary before or after the JSON object.\
+- Do not add commentary before or after the JSON object.
+
+CONTEXT FIELDS (provided in the user message)
+---------------------------------------------
+Your input includes additional context to guide the edit:
+
+  Field key      — The logical CV field being edited (e.g. key_qualifications,
+                   detailed_tasks, activities_performed). Use this to understand
+                   the field's role in the document.
+
+  Donor format   — Either "giz" or "world_bank". Apply the conventions of this
+                   format. GIZ: active verbs, past tense, evidence-grounded.
+                   World Bank: forward-looking task statements, action verbs,
+                   outcome-oriented.
+
+  Word limit     — The maximum word count that applies to this field type.
+                   If provided, ensure your edited value does not exceed it.
+                   If "no specific limit", write naturally within context.
+
+  CV context     — The proposed position and top project names. Use this as
+                   minimal grounding to understand the expert's background
+                   when deciding how to phrase or trim the field.\
 """
 
 
-def build_user_prompt(field_path: str, current_value: str, instruction: str) -> str:
+def _field_key_from_path(field_path: str) -> str:
+    """
+    Strip list indices from a field path to get the logical field key.
+
+    Examples:
+      "key_qualifications[2]"              → "key_qualifications"
+      "relevant_projects[1].activities_performed" → "activities_performed"
+      "generated_fields[0].content"        → "content"
+      "personal_info.first_names"          → "first_names"
+    """
+    # Normalise bracket notation to dot notation, then take the last non-numeric segment
+    normalised = re.sub(r"\[(\d+)\]", r".\1", field_path)
+    parts = [p for p in normalised.split(".") if p and not p.isdigit()]
+    return parts[-1] if parts else field_path
+
+
+def build_user_prompt(
+    field_path: str,
+    current_value: str,
+    instruction: str,
+    *,
+    donor: str = "",
+    cv_context: dict | None = None,
+) -> str:
+    """
+    Build the user prompt for a single field edit.
+
+    Parameters
+    ----------
+    field_path     : dot/bracket path into generated_fields["generated"]
+    current_value  : current scalar value of the field
+    instruction    : natural-language edit instruction from the user
+    donor          : normalised donor format string ("giz" or "world_bank")
+    cv_context     : dict with keys "proposed_position" (str) and
+                     "top_projects" (list[str]) — used as a CV grounding snippet
+    """
+    field_key = _field_key_from_path(field_path)
+    word_limit = FIELD_WORD_LIMITS.get((donor, field_key)) if donor else None
+    word_limit_str = f"{word_limit} words" if word_limit else "no specific limit"
+
+    context_lines: list[str] = [
+        f"Field key: {field_key}",
+        f"Donor format: {donor or 'not specified'}",
+        f"Word limit: {word_limit_str}",
+    ]
+    if cv_context:
+        proposed = cv_context.get("proposed_position", "")
+        top_projects = cv_context.get("top_projects", [])
+        snippet_parts = []
+        if proposed:
+            snippet_parts.append(f"Proposed position: {proposed}")
+        if top_projects:
+            snippet_parts.append("Top projects: " + ", ".join(top_projects))
+        if snippet_parts:
+            context_lines.append("CV context: " + " | ".join(snippet_parts))
+
+    context_block = "\n".join(context_lines)
+
     return (
+        f"{context_block}\n\n"
         f"Field path: {field_path}\n\n"
         f"Current value:\n\"\"\"\n{current_value}\n\"\"\"\n\n"
         f"Edit instruction: {instruction}"
@@ -166,6 +261,9 @@ def call_claude(
     field_path: str,
     current_value: str,
     instruction: str,
+    *,
+    donor: str = "",
+    cv_context: dict | None = None,
 ) -> dict:
     """
     Call Claude for a single field edit using JSON schema + assistant prefill.
@@ -179,11 +277,17 @@ def call_claude(
     raw = client.messages.create(
         model=MODEL,
         max_tokens=1000,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT_A7,
         messages=[
             {
                 "role": "user",
-                "content": build_user_prompt(field_path, str(current_value), instruction),
+                "content": build_user_prompt(
+                    field_path,
+                    str(current_value),
+                    instruction,
+                    donor=donor,
+                    cv_context=cv_context,
+                ),
             },
             # Prefill: forces the response to begin with '{"action": "'
             # Claude continues from this exact string, so it cannot deviate
@@ -230,6 +334,9 @@ def run_field_editor(
     review: dict | None,
     edits: list[dict],
     client: Anthropic,
+    *,
+    donor: str = "",
+    cv_context: dict | None = None,
 ) -> tuple[dict, list[str], list[str]]:
     """
     Apply edits sequentially to a deep copy of `generated`.
@@ -243,6 +350,12 @@ def run_field_editor(
         logged here for awareness but not sent to Claude in the silo).
     edits : list[dict]
         Each item: {"field_path": str, "instruction": str}
+    donor : str
+        Normalised donor format string ("giz" or "world_bank").  Used by
+        build_user_prompt to look up word limits and apply format conventions.
+    cv_context : dict | None
+        Minimal CV grounding snippet with keys "proposed_position" and
+        "top_projects".  Forwarded to build_user_prompt.
 
     Returns
     -------
@@ -288,7 +401,14 @@ def run_field_editor(
 
         # --- Call Claude ---
         try:
-            result = call_claude(client, field_path, current_value, instruction)
+            result = call_claude(
+                client,
+                field_path,
+                current_value,
+                instruction,
+                donor=donor,
+                cv_context=cv_context,
+            )
         except Exception as exc:
             log.warning("  API / parse error for '%s': %s", field_path, exc)
             skipped.append(field_path)
@@ -321,7 +441,12 @@ def run_field_editor(
 # ---------------------------------------------------------------------------
 
 
-def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
+def run(
+    run_dir: Path,
+    edits: list[dict],
+    donor: str = "",
+    cv_context: dict | None = None,
+) -> tuple[list[str], list[str]]:
     """
     Pipeline entry point called by the HTTP handler (POST /field-edit).
 
@@ -332,6 +457,17 @@ def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
     field_editor has no manifest step — the caller is responsible for
     transitioning the DB session status (set_processing before calling,
     set_checkpoint_pending(3) after returning).
+
+    Parameters
+    ----------
+    run_dir    : session run directory
+    edits      : list of {"field_path": str, "instruction": str} dicts
+    donor      : normalised donor format ("giz" or "world_bank").  Passed
+                 in by the orchestrator; falls back to "" if not provided.
+    cv_context : {"proposed_position": str, "top_projects": list[str]}.
+                 Built by the orchestrator from the session manifest and
+                 generated_fields.json.  If not provided, context sections
+                 are omitted from the user prompt (backward-compatible).
     """
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():
@@ -351,7 +487,14 @@ def run(run_dir: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
 
     client = Anthropic()  # reads ANTHROPIC_API_KEY from environment
 
-    mutated, applied, skipped = run_field_editor(generated, review, edits, client)
+    mutated, applied, skipped = run_field_editor(
+        generated,
+        review,
+        edits,
+        client,
+        donor=donor,
+        cv_context=cv_context,
+    )
 
     # Write back — preserve all top-level keys, only replace "generated"
     gf["generated"] = mutated

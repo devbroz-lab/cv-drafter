@@ -503,6 +503,66 @@ class FormatProfile(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Compression result models (used by Agent 6 — Compressor)
+# ---------------------------------------------------------------------------
+
+
+class FieldShortened(BaseModel):
+    """Record of a single field that was shortened by the compressor."""
+
+    field: str = Field(description="Top-level CVData field name (e.g. 'relevant_projects')")
+    subfield: str = Field(default="", description="Sub-field or index within the parent (e.g. '[0].activities_performed')")
+    words_before: int = Field(default=0)
+    words_after: int = Field(default=0)
+
+
+class CompressionResult(BaseModel):
+    """
+    Structured output block produced by Agent 6 (Compressor).
+
+    The LLM emits this as the ``compression`` key in its response JSON.
+    Python post-processing overwrites ``words_after`` with the authoritative
+    count computed from the actual output, and records any protected-field
+    restorations in ``protected_field_restorations``.
+    """
+
+    applied: bool = Field(
+        description="True if any compression was performed; false if content was already within target."
+    )
+    words_before: int = Field(
+        default=0,
+        description="Word count before compression.  Supplied by Python pre-compute — the LLM copies this value.",
+    )
+    words_after: int = Field(
+        default=0,
+        description="Estimated word count after compression.  Overwritten by Python post-compute with the authoritative value.",
+    )
+    target_words: int = Field(default=0, description="The hard word-count target that was in effect.")
+    ratio_applied: bool = Field(
+        default=False,
+        description="True if the compression_ratio fallback was used instead of a hard target_words.",
+    )
+    fields_shortened: list[FieldShortened] = Field(
+        default_factory=list,
+        description="Per-field compression audit trail.",
+    )
+    target_not_reached: bool = Field(
+        default=False,
+        description=(
+            "True when the LLM could not reach target_words without violating "
+            "compression rules.  Signals that human review may be needed."
+        ),
+    )
+    protected_field_restorations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Field names restored by Python post-processing because the LLM "
+            "inadvertently altered a protected field.  Empty in normal operation."
+        ),
+    )
+
+
 FORMAT_PROFILES: dict[str, FormatProfile] = {
     "giz": FormatProfile(
         format_id="giz",
