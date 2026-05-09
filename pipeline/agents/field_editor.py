@@ -47,8 +47,8 @@ log = logging.getLogger(__name__)
 # Model — Dev 2's choice: Sonnet for editing quality
 # ---------------------------------------------------------------------------
 
-# MODEL = "claude-sonnet-4-20250514"
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "claude-sonnet-4-20250514"
+# MODEL = "claude-haiku-4-5-20251001"
 
 # ---------------------------------------------------------------------------
 # P5: Word-limit table — per (donor, field_key)
