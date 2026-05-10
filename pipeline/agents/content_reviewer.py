@@ -54,13 +54,6 @@ from pipeline.validation import (
 client = Anthropic()
 
 SYSTEM_PROMPT_A5 = """
-CRITICAL OUTPUT RULE: Your entire response must be a single valid JSON object.
-Output the opening brace { immediately as the very first character.
-Do not write any text before the JSON — no observations, no reasoning,
-no analysis, no key observations, no preamble of any kind.
-No markdown fences. The response must be parseable by json.loads() with no
-pre-processing.
-
 You are the Content Reviewer agent in a document processing pipeline. You
 receive a fully generated CVData object, the original DistilledToR, and a
 list of generation warnings from the previous agent. Your job is to review
@@ -575,29 +568,6 @@ def _apply_post_processing(
 
 
 # ---------------------------------------------------------------------------
-# JSON extraction helper (defence against leading prose in LLM output)
-# ---------------------------------------------------------------------------
-
-
-def _extract_json_from_text(text: str) -> str:
-    """
-    Extract a JSON object from text that may have leading or trailing prose.
-
-    When the model emits reasoning or observations before the JSON object,
-    json.loads() fails at character 0.  This function finds the outermost
-    { ... } span and returns it, letting parse_json_string work on clean JSON.
-
-    If no braces are found, returns the original text so that parse_json_string
-    can produce a clean error message rather than a confusing index error.
-    """
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return text  # let downstream raise with the original text
-    return text[start : end + 1]
-
-
-# ---------------------------------------------------------------------------
 # Main run function
 # ---------------------------------------------------------------------------
 
@@ -664,7 +634,6 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
         raise ValueError("Content Reviewer response truncated (max_tokens reached).")
 
     raw_text = response.content[0].text.strip()
-    raw_text = _extract_json_from_text(raw_text)
 
     try:
         parsed = parse_json_string(raw_text, context="content_reviewer.llm_response")
