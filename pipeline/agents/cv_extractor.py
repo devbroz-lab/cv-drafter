@@ -167,7 +167,7 @@ def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
     update_step(run_dir, "cv_extractor", "running")
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=16000,
         system=_build_prompt(SYSTEM_PROMPT_A1),
         messages=[
