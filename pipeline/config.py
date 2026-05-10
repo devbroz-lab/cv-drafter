@@ -12,7 +12,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 # Model used by content_reviewer (and any agent that does not override it).
-ANTHROPIC_MODEL: str = "claude-sonnet-6"
+ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 
 # Hard token cap for content_reviewer LLM call.  The reviewer outputs the full
 # CVData + review block, so this needs to be generous.
