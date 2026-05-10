@@ -232,6 +232,13 @@ class FieldEditItem(BaseModel):
     instruction: str = Field(
         min_length=1, description="Natural language instruction for the edit agent"
     )
+    anchor_text: str | None = Field(
+        default=None,
+        description=(
+            "Optional clicked paragraph/cell text from the Docx viewer. "
+            "Used to resolve placeholder paths like paragraph_<n> to key_qualifications[i]."
+        ),
+    )
 
 
 class FieldEditRequest(BaseModel):

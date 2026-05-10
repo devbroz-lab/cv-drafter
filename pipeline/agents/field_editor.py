@@ -145,6 +145,130 @@ def set_by_path(data: dict, field_path: str, new_value) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Paragraph placeholder paths (Docx viewer fallback → key_qualifications[i])
+# ---------------------------------------------------------------------------
+
+_PARAGRAPH_PLACEHOLDER = re.compile(r"^paragraph_\d+$")
+
+
+def _strip_bullet_prefix(s: str) -> str:
+    # Leading bullets / dashes (hyphen last in class to avoid range ambiguity)
+    return re.sub(r"^[\s•·▪▫\u2022\u2023–—*\-]+\s*", "", s.strip())
+
+
+def _normalize_whitespace(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _key_qualification_bullets(generated: dict) -> list[str]:
+    raw = generated.get("key_qualifications")
+    if isinstance(raw, list) and raw:
+        out = [str(x).strip() for x in raw if str(x).strip()]
+        if out:
+            return out
+    gf = generated.get("generated_fields")
+    if isinstance(gf, list):
+        out = [
+            str(e.get("content", "")).strip()
+            for e in gf
+            if isinstance(e, dict)
+            and e.get("field_key") == "key_qualifications"
+            and str(e.get("content", "")).strip()
+        ]
+        if out:
+            return out
+    return []
+
+
+_KQ_TEXT_MATCH_MIN_SCORE = 40
+_ORI_TEXT_MATCH_MIN_SCORE = 35
+
+
+def _match_key_qualification_index(paragraph_text: str, bullets: list[str]) -> int | None:
+    """Best-effort match of clicked text to a key_qualifications bullet (mirrors UI logic)."""
+    p0 = _strip_bullet_prefix(paragraph_text)
+    p = _normalize_whitespace(p0).lower()
+    if not p or not bullets:
+        return None
+    best_idx: int | None = None
+    best_score = 0
+    for i, bullet in enumerate(bullets):
+        b0 = _strip_bullet_prefix(bullet)
+        b = _normalize_whitespace(b0).lower()
+        if not b:
+            continue
+        if p == b:
+            score = 100
+        elif p in b or b in p:
+            score = 85
+        else:
+            pw = {w for w in p.split() if len(w) > 1}
+            bw = {w for w in b.split() if len(w) > 1}
+            inter = len(pw & bw)
+            union = len(pw) + len(bw) - inter
+            score = round(100 * inter / union) if union else 0
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    if best_idx is None or best_score < _KQ_TEXT_MATCH_MIN_SCORE:
+        return None
+    return best_idx
+
+
+def _anchor_matches_other_relevant_info(anchor: str, ori: str) -> bool:
+    """True if clicked paragraph text is part of the stored other_relevant_info body."""
+    ori_s = str(ori).strip()
+    if not ori_s:
+        return False
+    p = _normalize_whitespace(_strip_bullet_prefix(anchor)).lower()
+    o = _normalize_whitespace(ori_s).lower()
+    if not p:
+        return False
+    if p == o:
+        return True
+    if o in p and len(o) >= 12:
+        return True
+    if p in o:
+        return True
+    pw = {w for w in p.split() if len(w) > 1}
+    ow = {w for w in o.split() if len(w) > 1}
+    if not pw:
+        return False
+    inter = len(pw & ow)
+    union = len(pw) + len(ow) - inter
+    score = round(100 * inter / union) if union else 0
+    return score >= _ORI_TEXT_MATCH_MIN_SCORE
+
+
+def resolve_paragraph_placeholder_path(
+    generated: dict,
+    field_path: str,
+    anchor_text: str | None,
+) -> str:
+    """
+    Map frontend fallback paths like ``paragraph_20`` to real dot-paths using
+    anchor_text: try ``key_qualifications[i]`` first, then ``other_relevant_info``.
+    """
+    if not _PARAGRAPH_PLACEHOLDER.match(field_path):
+        return field_path
+    if not anchor_text or not str(anchor_text).strip():
+        return field_path
+    a = str(anchor_text).strip()
+
+    bullets = _key_qualification_bullets(generated)
+    if bullets:
+        idx = _match_key_qualification_index(a, bullets)
+        if idx is not None:
+            return f"key_qualifications[{idx}]"
+
+    ori = generated.get("other_relevant_info")
+    if isinstance(ori, str) and ori.strip() and _anchor_matches_other_relevant_info(a, ori):
+        return "other_relevant_info"
+
+    return field_path
+
+
+# ---------------------------------------------------------------------------
 # PROMPT — copied verbatim from field_editor_agent.py by Dev 2
 # ---------------------------------------------------------------------------
 
@@ -411,8 +535,13 @@ def run_field_editor(
     skipped: list[dict] = []
 
     for i, edit in enumerate(edits, start=1):
-        field_path  = edit["field_path"]
+        raw_path = edit["field_path"]
         instruction = edit["instruction"]
+        anchor_text = edit.get("anchor_text")
+
+        field_path = resolve_paragraph_placeholder_path(mutated, raw_path, anchor_text)
+        if field_path != raw_path:
+            log.info("[Edit %d/%d] resolved path '%s' → '%s'", i, len(edits), raw_path, field_path)
 
         log.debug("[Edit %d/%d] path='%s'", i, len(edits), field_path)
         log.debug("  instruction: %s", instruction)

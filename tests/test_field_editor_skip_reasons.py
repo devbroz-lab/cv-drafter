@@ -18,7 +18,7 @@ from pipeline.agents.field_editor import (
     _truncate_reason,
     run_field_editor,
 )
-from api.models.requests import FieldEditResponse, FieldEditSkip
+from api.models.requests import FieldEditItem, FieldEditResponse, FieldEditSkip
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,54 @@ class TestTruncateReason:
 
     def test_limit_constant_is_200(self):
         assert _SKIP_REASON_MAX_LEN == 200
+
+
+# ---------------------------------------------------------------------------
+# paragraph_<n> → key_qualifications[i] (anchor_text from Docx viewer)
+# ---------------------------------------------------------------------------
+
+
+class TestParagraphPlaceholderResolution:
+    def test_resolves_with_anchor_to_key_qualifications(self):
+        generated = {
+            "key_qualifications": [
+                "Lead solar deployment projects in Kenya.",
+                "Second bullet",
+            ]
+        }
+        edits = [
+            {
+                "field_path": "paragraph_20",
+                "instruction": "Make shorter",
+                "anchor_text": "Lead solar deployment projects in Kenya.",
+            }
+        ]
+        with patch("pipeline.agents.field_editor.call_claude") as m:
+            m.return_value = {"action": "apply", "value": "Lead solar in Kenya."}
+            mutated, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
+        assert applied == ["key_qualifications[0]"]
+        assert skipped == []
+        assert mutated["key_qualifications"][0] == "Lead solar in Kenya."
+
+    def test_paragraph_n_without_anchor_still_fails(self):
+        generated = {"key_qualifications": ["x"]}
+        edits = [{"field_path": "paragraph_5", "instruction": "y"}]
+        _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
+        assert applied == []
+        assert len(skipped) == 1
+        assert "path resolution failed" in skipped[0]["reason"]
+
+
+class TestFieldEditItemAnchorText:
+    def test_optional_anchor_text(self):
+        a = FieldEditItem(field_path="key_qualifications[0]", instruction="x")
+        assert a.anchor_text is None
+        b = FieldEditItem(
+            field_path="paragraph_2",
+            instruction="x",
+            anchor_text="Clicked line of text",
+        )
+        assert b.anchor_text == "Clicked line of text"
 
 
 # ---------------------------------------------------------------------------

@@ -1048,7 +1048,14 @@ async def submit_field_edits(
             ),
         )
 
-    edits = [{"field_path": e.field_path, "instruction": e.instruction} for e in payload.edits]
+    edits = [
+        {
+            "field_path": e.field_path,
+            "instruction": e.instruction,
+            "anchor_text": e.anchor_text,
+        }
+        for e in payload.edits
+    ]
 
     # Increment the round counter so the re-rendered output.docx gets the
     # correct label (round_02_giz.docx, round_03_giz.docx, …).
