@@ -166,7 +166,7 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     )
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=16000,
         system=_build_prompt(SYSTEM_PROMPT_A2),
         messages=[{"role": "user", "content": content}],
