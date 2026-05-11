@@ -364,9 +364,12 @@ async def run_phase4(*, session_id: str) -> None:
     run_dir = get_run_dir(session_id)
 
     try:
-        # Idempotency guard — never render twice
-        if get_step_status(run_dir, "renderer") == "done":
-            log.warning("Session %s renderer already done — skipping", session_id)
+        # Avoid concurrent duplicate Phase 4 tasks only — do NOT skip when status is
+        # still "done" from a previous completed render: field edits reset the
+        # manifest to "waiting", but if that write ever races or stalls, we would
+        # skip re-rendering and leave output.docx stale while JSON was updated.
+        if get_step_status(run_dir, "renderer") == "running":
+            log.warning("Session %s renderer already running — skipping duplicate Phase 4", session_id)
             return
 
         update_step(run_dir, "renderer", "running")

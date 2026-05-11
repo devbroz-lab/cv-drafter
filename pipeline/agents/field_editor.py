@@ -160,6 +160,11 @@ def _normalize_whitespace(s: str) -> str:
     return " ".join(s.split())
 
 
+def _normalized_scalar_equals(a: object, b: object) -> bool:
+    """Whitespace-insensitive equality for comparing edited scalar strings."""
+    return _normalize_whitespace(str(a)).lower() == _normalize_whitespace(str(b)).lower()
+
+
 def _key_qualification_bullets(generated: dict) -> list[str]:
     raw = generated.get("key_qualifications")
     if isinstance(raw, list) and raw:
@@ -590,6 +595,15 @@ def run_field_editor(
             continue
 
         new_value = result["value"]
+
+        if _normalized_scalar_equals(new_value, current_value):
+            reason = (
+                "Editor produced text identical to the original after normalizing whitespace. "
+                "Try a more explicit instruction or specify exact wording to change."
+            )
+            log.warning("  SKIPPED — unchanged value for '%s'", field_path)
+            skipped.append({"path": field_path, "reason": _truncate_reason(reason)})
+            continue
 
         # --- Write back ---
         try:
