@@ -7,6 +7,14 @@ Verifies:
   - Reasons are truncated when the source string exceeds 200 chars
   - run_field_editor returns list[dict] for skipped (not list[str])
   - FieldEditResponse accepts list[FieldEditSkip] and rejects list[str]
+
+Also covers Mismatch 1 fix — KQ priority reversal:
+  - _key_qualification_bullets prefers generated_fields over raw list
+  - _key_qualification_source returns correct source label
+  - _key_qualification_path_for_index returns generated_fields[j].content
+    when generated_fields is the active source
+  - paragraph_N placeholder resolves to generated_fields[j].content when
+    generated_fields is the active KQ source
 """
 
 import pytest
@@ -16,6 +24,9 @@ from pydantic import ValidationError
 from pipeline.agents.field_editor import (
     _SKIP_REASON_MAX_LEN,
     _truncate_reason,
+    _key_qualification_bullets,
+    _key_qualification_source,
+    _key_qualification_path_for_index,
     run_field_editor,
 )
 from api.models.requests import FieldEditItem, FieldEditResponse, FieldEditSkip
@@ -306,6 +317,7 @@ class TestFieldEditResponseModel:
             applied=["relevant_projects[1].location"],
             skipped=skipped,
             message="done",
+            kq_source="ai_generated",
         )
 
     def test_accepts_skip_dicts(self):
@@ -338,3 +350,160 @@ class TestFieldEditResponseModel:
         # 200 content chars + ellipsis = exactly 201 chars — should pass
         skip = FieldEditSkip(path="p", reason="x" * 200 + "\u2026")
         assert len(skip.reason) == 201
+
+
+# ---------------------------------------------------------------------------
+# Mismatch 1 fix — KQ priority reversal
+# ---------------------------------------------------------------------------
+
+
+class TestKeyQualificationBulletsReversedPriority:
+    """_key_qualification_bullets must prefer generated_fields over raw list."""
+
+    def test_prefers_generated_fields_when_non_empty(self):
+        generated = {
+            "key_qualifications": ["Raw bullet A", "Raw bullet B"],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": "Generated bullet 1"},
+                {"field_key": "key_qualifications", "content": "Generated bullet 2"},
+            ],
+        }
+        bullets = _key_qualification_bullets(generated)
+        assert bullets == ["Generated bullet 1", "Generated bullet 2"]
+
+    def test_falls_back_to_raw_when_generated_fields_empty_content(self):
+        generated = {
+            "key_qualifications": ["Raw bullet A"],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": ""},
+                {"field_key": "key_qualifications", "content": "   "},
+            ],
+        }
+        bullets = _key_qualification_bullets(generated)
+        assert bullets == ["Raw bullet A"]
+
+    def test_falls_back_to_raw_when_no_kq_in_generated_fields(self):
+        generated = {
+            "key_qualifications": ["Raw bullet A"],
+            "generated_fields": [
+                {"field_key": "detailed_tasks", "content": "Task content"},
+            ],
+        }
+        bullets = _key_qualification_bullets(generated)
+        assert bullets == ["Raw bullet A"]
+
+    def test_returns_empty_when_both_sources_empty(self):
+        generated = {
+            "key_qualifications": [],
+            "generated_fields": [],
+        }
+        assert _key_qualification_bullets(generated) == []
+
+    def test_filters_empty_entries_from_generated_fields(self):
+        generated = {
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": "Good bullet"},
+                {"field_key": "key_qualifications", "content": ""},
+                {"field_key": "key_qualifications", "content": "Another good"},
+            ],
+        }
+        bullets = _key_qualification_bullets(generated)
+        assert bullets == ["Good bullet", "Another good"]
+
+
+class TestKeyQualificationSource:
+    def test_source_is_generated_fields_when_non_empty(self):
+        generated = {
+            "key_qualifications": ["Raw"],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": "Generated"},
+            ],
+        }
+        assert _key_qualification_source(generated) == "generated_fields"
+
+    def test_source_is_raw_when_gf_empty(self):
+        generated = {
+            "key_qualifications": ["Raw"],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": ""},
+            ],
+        }
+        assert _key_qualification_source(generated) == "raw"
+
+    def test_source_is_none_when_both_empty(self):
+        generated = {"key_qualifications": [], "generated_fields": []}
+        assert _key_qualification_source(generated) == "none"
+
+
+class TestKeyQualificationPathForIndex:
+    def test_returns_generated_fields_path_when_gf_is_active(self):
+        generated = {
+            "generated_fields": [
+                {"field_key": "other", "content": "X"},           # j=0 — different key
+                {"field_key": "key_qualifications", "content": "Bullet A"},  # j=1
+                {"field_key": "key_qualifications", "content": "Bullet B"},  # j=2
+            ],
+        }
+        assert _key_qualification_path_for_index(generated, 0) == "generated_fields[1].content"
+        assert _key_qualification_path_for_index(generated, 1) == "generated_fields[2].content"
+
+    def test_returns_raw_path_when_raw_is_active(self):
+        generated = {
+            "key_qualifications": ["Raw bullet 0", "Raw bullet 1"],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": ""},
+            ],
+        }
+        assert _key_qualification_path_for_index(generated, 0) == "key_qualifications[0]"
+        assert _key_qualification_path_for_index(generated, 1) == "key_qualifications[1]"
+
+    def test_returns_raw_path_when_no_generated_fields(self):
+        generated = {"key_qualifications": ["Raw"]}
+        assert _key_qualification_path_for_index(generated, 0) == "key_qualifications[0]"
+
+
+class TestParagraphPlaceholderResolutionWithGeneratedFields:
+    """Paragraph_N fallback must resolve to generated_fields[j].content when GF is active source."""
+
+    def test_resolves_to_generated_fields_path_when_gf_active(self):
+        generated = {
+            "key_qualifications": ["Old raw bullet"],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": "Lead solar deployment in Kenya."},
+            ],
+        }
+        edits = [
+            {
+                "field_path": "paragraph_20",
+                "instruction": "Make shorter",
+                "anchor_text": "Lead solar deployment in Kenya.",
+            }
+        ]
+        with patch("pipeline.agents.field_editor.call_claude") as m:
+            m.return_value = {"action": "apply", "value": "Lead solar in Kenya."}
+            mutated, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
+
+        assert applied == ["generated_fields[0].content"]
+        assert skipped == []
+        assert mutated["generated_fields"][0]["content"] == "Lead solar in Kenya."
+
+    def test_resolves_to_raw_path_when_gf_empty(self):
+        generated = {
+            "key_qualifications": ["Lead solar deployment in Kenya."],
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": ""},
+            ],
+        }
+        edits = [
+            {
+                "field_path": "paragraph_20",
+                "instruction": "Make shorter",
+                "anchor_text": "Lead solar deployment in Kenya.",
+            }
+        ]
+        with patch("pipeline.agents.field_editor.call_claude") as m:
+            m.return_value = {"action": "apply", "value": "Lead solar in Kenya."}
+            mutated, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
+
+        assert applied == ["key_qualifications[0]"]
+        assert skipped == []

@@ -17,15 +17,58 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import CompressionResult, CVData
-from pipeline.manifest import update_step
+from pipeline.config import ANTHROPIC_MODEL
+from pipeline.manifest import append_warning, update_step
+import copy
+
 from pipeline.precompute_utils import (
     count_compressible_words_total,
     count_words_per_field,
     restore_protected_fields,
 )
-from pipeline.utils import resolve_tor_for_agents, strip_code_fences
+from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
+
+# Fix Z: per-project word cap for A6 input — prevents JSON truncation on
+# dense CVs. Unlike Fix 8 Part 3 (A4), there is no restoration step because
+# A6 is explicitly compressing these fields.
+A6_INPUT_PROJECT_WORD_CAP: int = 150
+_A6_CAPPED_FIELDS: tuple[str, ...] = ("activities_performed", "main_project_features")
+
+
+def _truncate_project_text_for_a6(cv_data: dict) -> tuple[dict, list[dict]]:
+    """
+    Return (truncated_cv_data, truncation_events).
+
+    truncated_cv_data: deep copy with activities_performed and
+    main_project_features capped to A6_INPUT_PROJECT_WORD_CAP per project.
+    Text beyond the cap is dropped (unlike Fix 8 Part 3 for A4, there is
+    no restoration — A6 is expected to compress these fields anyway).
+    Truncated text is suffixed with "…" (U+2026).
+
+    truncation_events: list of dicts recording each truncation:
+      [{"project_name": str, "field": str,
+        "original_word_count": int, "truncated_word_count": int}, ...]
+    Empty when no field exceeded the cap.
+    """
+    result = copy.deepcopy(cv_data)
+    events: list[dict] = []
+    for project in result.get("relevant_projects", []):
+        pname = project.get("project_name", "")
+        for field in _A6_CAPPED_FIELDS:
+            text = project.get(field, "") or ""
+            words = text.split()
+            if len(words) > A6_INPUT_PROJECT_WORD_CAP:
+                project[field] = " ".join(words[:A6_INPUT_PROJECT_WORD_CAP]) + "\u2026"
+                events.append({
+                    "project_name": pname,
+                    "field": field,
+                    "original_word_count": len(words),
+                    "truncated_word_count": A6_INPUT_PROJECT_WORD_CAP,
+                })
+    return result, events
+
 
 # Fields that must NEVER be passed to compression logic.
 PROTECTED_FIELDS: frozenset[str] = frozenset(
@@ -52,9 +95,12 @@ a reviewed CVData object and compression instructions. Your job is to shorten
 content across the CVData to bring the total word count within the specified
 target, while preserving meaning, accuracy, and tone.
 
-## Output rules
-- Respond with a single JSON object and nothing else.
-- No preamble, no explanation, no markdown fences.
+## Output contract (READ FIRST)
+- Your entire response must be a single JSON object — nothing else.
+- The FIRST non-whitespace character MUST be `{`. The LAST MUST be `}`.
+- No preamble. No reasoning text. No "Here is the JSON". No explanation.
+- No markdown fences (no ```json, no ```).
+- Do all reasoning silently. Only the JSON object is emitted.
 - The output must have this exact shape:
 
 {
@@ -244,8 +290,16 @@ def run(
     tor_raw = json.loads((run_dir / "tor_data.json").read_text(encoding="utf-8"))
     tor_data = resolve_tor_for_agents(tor_raw, context="compressor.run")
 
+    # Fix Z: cap project text in A6's input to prevent JSON truncation on
+    # dense CVs. Unlike Fix 8 Part 3 (A4), no restoration is needed because
+    # A6 is explicitly compressing these fields. Information beyond cap is
+    # intentionally excluded from the compression scope.
+    cv_data_a6_input, truncation_events = _truncate_project_text_for_a6(cv_data_in)
+
     # P16/P2-A6: pre-compute word counts in Python
-    words_per_field = count_words_per_field(cv_data_in)
+    # Recompute word counts on the truncated input — target arithmetic must
+    # be based on what A6 actually sees.
+    words_per_field = count_words_per_field(cv_data_a6_input)
     current_words = sum(words_per_field.values())
     effective_target = target_words if target_words > 0 else int(current_words * compression_ratio)
 
@@ -262,6 +316,21 @@ def run(
         gf_raw["compression"] = compression_result.model_dump()
         gf_raw["generation_warnings"] = generation_warnings
         gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Emit soft-flag warnings for any fields truncated before A6 compression.
+        for evt in truncation_events:
+            append_warning(
+                run_dir,
+                stage="compressor",
+                kind="input_field_truncated",
+                message=(
+                    f"Project '{evt['project_name']}' field '{evt['field']}' was "
+                    f"truncated from {evt['original_word_count']} to "
+                    f"{evt['truncated_word_count']} words before A6 compression. "
+                    f"Content beyond {A6_INPUT_PROJECT_WORD_CAP} words was excluded "
+                    f"from compression scope."
+                ),
+                details=evt,
+            )
         update_step(run_dir, "compressor", "done")
         return CVData.model_validate(cv_data_in)
 
@@ -274,14 +343,14 @@ def run(
     }
 
     user_message = (
-        f"<cv_data>\n{json.dumps(cv_data_in, indent=2)}\n</cv_data>\n\n"
+        f"<cv_data>\n{json.dumps(cv_data_a6_input, indent=2)}\n</cv_data>\n\n"
         f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
         f"<compression_params>\n{json.dumps(compression_params, indent=2)}\n</compression_params>\n\n"
         f"<generation_warnings>\n{json.dumps(generation_warnings, indent=2)}\n</generation_warnings>"
     )
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=ANTHROPIC_MODEL,
         max_tokens=16000,
         system=SYSTEM_PROMPT_A6,
         messages=[{"role": "user", "content": user_message}],
@@ -292,6 +361,7 @@ def run(
         raise ValueError("Compressor response truncated (max_tokens reached).")
 
     raw = strip_code_fences(response.content[0].text.strip())
+    raw = extract_json_object(raw)
 
     try:
         parsed = json.loads(raw)
@@ -323,6 +393,22 @@ def run(
     # P19: write generation_warnings passthrough back to file
     gf_raw["generation_warnings"] = generation_warnings
     gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Emit soft-flag warnings for any fields truncated before A6 compression.
+    for evt in truncation_events:
+        append_warning(
+            run_dir,
+            stage="compressor",
+            kind="input_field_truncated",
+            message=(
+                f"Project '{evt['project_name']}' field '{evt['field']}' was "
+                f"truncated from {evt['original_word_count']} to "
+                f"{evt['truncated_word_count']} words before A6 compression. "
+                f"Content beyond {A6_INPUT_PROJECT_WORD_CAP} words was excluded "
+                f"from compression scope."
+            ),
+            details=evt,
+        )
 
     update_step(run_dir, "compressor", "done")
     return cv_data_out

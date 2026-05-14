@@ -8,6 +8,13 @@ Verifies:
   - build_user_prompt is backward-compatible when donor/cv_context are omitted
   - run_field_editor passes donor and cv_context through to call_claude
     (via mock)
+
+Also covers Mismatch 3 fix — GIZ CEFR enrichment:
+  - When donor == "giz" and the stored *_cefr field is empty, run_field_editor
+    enriches the prompt's current_value with the mapped sibling *_raw value.
+  - The write still targets the original cefr path.
+  - The enrichment is skipped when donor != "giz".
+  - The enrichment is skipped when the cefr field is already non-empty.
 """
 
 import pytest
@@ -17,6 +24,7 @@ from pipeline.agents.field_editor import (
     FIELD_WORD_LIMITS,
     _field_key_from_path,
     build_user_prompt,
+    kq_source_label,
     run_field_editor,
 )
 
@@ -196,3 +204,303 @@ class TestRunFieldEditorPassesContext:
 
         assert applied == ["key_qualifications[0]"]
         assert mutated["key_qualifications"][0] == "Rewritten"
+
+
+# ---------------------------------------------------------------------------
+# Mismatch 3 fix — GIZ CEFR enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestCefrEnrichment:
+    """
+    When donor == "giz" and the stored *_cefr field is empty, run_field_editor
+    must pass the mapped *_raw value as current_value to call_claude.
+    The write target (the cefr field) must remain unchanged.
+    """
+
+    def _make_generated(self, reading_cefr: str = "", reading_raw: str = "fluent") -> dict:
+        return {
+            "languages": [
+                {
+                    "language": "English",
+                    "reading_cefr": reading_cefr,
+                    "reading_raw": reading_raw,
+                    "speaking_cefr": "",
+                    "speaking_raw": "fluent",
+                    "writing_cefr": "",
+                    "writing_raw": "good",
+                }
+            ]
+        }
+
+    def test_enriched_current_value_passed_to_claude(self):
+        """When reading_cefr is empty, call_claude receives the mapped raw value."""
+        generated = self._make_generated(reading_cefr="", reading_raw="fluent")
+        edits = [{"field_path": "languages[0].reading_cefr", "instruction": "change to B2"}]
+
+        captured_current_value = None
+
+        def capture_call(client, field_path, current_value, instruction, **kwargs):
+            nonlocal captured_current_value
+            captured_current_value = current_value
+            return {"action": "apply", "value": "B2"}
+
+        with patch("pipeline.agents.field_editor.call_claude", side_effect=capture_call):
+            mutated, applied, skipped = run_field_editor(
+                generated, None, edits, MagicMock(), donor="giz"
+            )
+
+        # "fluent" maps to "C2" via _map_cefr
+        assert captured_current_value == "C2"
+        assert applied == ["languages[0].reading_cefr"]
+        assert mutated["languages"][0]["reading_cefr"] == "B2"
+
+    def test_write_targets_cefr_field_not_raw(self):
+        """The write must land on reading_cefr, not reading_raw."""
+        generated = self._make_generated(reading_cefr="", reading_raw="fluent")
+        edits = [{"field_path": "languages[0].reading_cefr", "instruction": "change to B2"}]
+
+        with patch("pipeline.agents.field_editor.call_claude") as mock_call:
+            mock_call.return_value = {"action": "apply", "value": "B2"}
+            mutated, applied, skipped = run_field_editor(
+                generated, None, edits, MagicMock(), donor="giz"
+            )
+
+        assert mutated["languages"][0]["reading_cefr"] == "B2"
+        assert mutated["languages"][0]["reading_raw"] == "fluent"  # raw is unchanged
+
+    def test_no_enrichment_when_cefr_already_set(self):
+        """If reading_cefr is already non-empty, pass it as-is to Claude."""
+        generated = self._make_generated(reading_cefr="B1", reading_raw="basic")
+        edits = [{"field_path": "languages[0].reading_cefr", "instruction": "change to B2"}]
+
+        captured_current_value = None
+
+        def capture_call(client, field_path, current_value, instruction, **kwargs):
+            nonlocal captured_current_value
+            captured_current_value = current_value
+            return {"action": "apply", "value": "B2"}
+
+        with patch("pipeline.agents.field_editor.call_claude", side_effect=capture_call):
+            run_field_editor(generated, None, edits, MagicMock(), donor="giz")
+
+        assert captured_current_value == "B1"
+
+    def test_no_enrichment_when_donor_is_not_giz(self):
+        """CEFR enrichment must NOT apply for non-GIZ donors."""
+        generated = self._make_generated(reading_cefr="", reading_raw="fluent")
+        edits = [{"field_path": "languages[0].reading_cefr", "instruction": "change to B2"}]
+
+        captured_current_value = None
+
+        def capture_call(client, field_path, current_value, instruction, **kwargs):
+            nonlocal captured_current_value
+            captured_current_value = current_value
+            return {"action": "apply", "value": "B2"}
+
+        with patch("pipeline.agents.field_editor.call_claude", side_effect=capture_call):
+            run_field_editor(generated, None, edits, MagicMock(), donor="world_bank")
+
+        # No enrichment — raw stored value (empty string) is passed
+        assert captured_current_value == ""
+
+    def test_speaking_and_writing_cefr_fields_also_enriched(self):
+        """Enrichment applies to all three CEFR fields, not just reading."""
+        generated = {
+            "languages": [
+                {
+                    "language": "French",
+                    "reading_cefr": "",
+                    "reading_raw": "good",
+                    "speaking_cefr": "",
+                    "speaking_raw": "good",
+                    "writing_cefr": "",
+                    "writing_raw": "fair",
+                }
+            ]
+        }
+
+        captured = {}
+
+        def capture_call(client, field_path, current_value, instruction, **kwargs):
+            captured[field_path] = current_value
+            return {"action": "apply", "value": "B1"}
+
+        edits = [
+            {"field_path": "languages[0].reading_cefr",  "instruction": "change to B2"},
+            {"field_path": "languages[0].speaking_cefr", "instruction": "change to B2"},
+            {"field_path": "languages[0].writing_cefr",  "instruction": "change to B2"},
+        ]
+
+        with patch("pipeline.agents.field_editor.call_claude", side_effect=capture_call):
+            run_field_editor(generated, None, edits, MagicMock(), donor="giz")
+
+        # "good" → "C1", "fair" → "B1/B2"
+        assert captured["languages[0].reading_cefr"] == "C1"
+        assert captured["languages[0].speaking_cefr"] == "C1"
+        assert captured["languages[0].writing_cefr"] == "B1/B2"
+
+
+# ---------------------------------------------------------------------------
+# Fix 6 — kq_source_label
+# ---------------------------------------------------------------------------
+
+
+class TestKqSourceLabel:
+    """kq_source_label translates _key_qualification_source to API labels."""
+
+    def test_returns_ai_generated_when_generated_fields_active(self):
+        generated = {
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": "Led solar projects."},
+            ],
+            "key_qualifications": ["Raw bullet"],
+        }
+        assert kq_source_label(generated) == "ai_generated"
+
+    def test_returns_extracted_when_only_raw_active(self):
+        generated = {
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": ""},
+            ],
+            "key_qualifications": ["Raw bullet"],
+        }
+        assert kq_source_label(generated) == "extracted"
+
+    def test_returns_absent_when_both_sources_empty(self):
+        generated = {
+            "generated_fields": [],
+            "key_qualifications": [],
+        }
+        assert kq_source_label(generated) == "absent"
+
+    def test_returns_absent_when_no_kq_keys_at_all(self):
+        generated = {}
+        assert kq_source_label(generated) == "absent"
+
+    def test_generated_fields_beats_raw_when_non_empty(self):
+        generated = {
+            "generated_fields": [
+                {"field_key": "key_qualifications", "content": "Generated."},
+            ],
+            "key_qualifications": ["Raw"],
+        }
+        assert kq_source_label(generated) == "ai_generated"
+
+    def test_all_three_label_values_are_valid_literals(self):
+        valid = {"ai_generated", "extracted", "absent"}
+        assert kq_source_label({}) in valid
+        assert kq_source_label({"key_qualifications": ["x"]}) in valid
+        assert kq_source_label({
+            "generated_fields": [{"field_key": "key_qualifications", "content": "x"}]
+        }) in valid
+
+
+class TestRunWrapperReturnsKqSource:
+    """The outer run() function returns kq_source as the third element."""
+
+    def test_run_returns_three_tuple(self, tmp_path):
+        import json
+        gf_data = {
+            "generated": {
+                "key_qualifications": ["Original bullet"],
+                "generated_fields": [],
+            }
+        }
+        (tmp_path / "generated_fields.json").write_text(
+            json.dumps(gf_data), encoding="utf-8"
+        )
+
+        from pipeline.agents.field_editor import run as field_editor_run
+
+        edits = [{"field_path": "key_qualifications[0]", "instruction": "shorten"}]
+
+        with patch("pipeline.agents.field_editor.call_claude") as mock_call:
+            mock_call.return_value = {"action": "apply", "value": "Short bullet"}
+            result = field_editor_run(tmp_path, edits)
+
+        assert len(result) == 3
+        applied, skipped, kq_source = result
+        assert kq_source in {"ai_generated", "extracted", "absent"}
+
+    def test_kq_source_reflects_post_edit_state(self, tmp_path):
+        """After a successful edit to generated_fields, kq_source is ai_generated."""
+        import json
+        gf_data = {
+            "generated": {
+                "key_qualifications": [],
+                "generated_fields": [
+                    {"field_key": "key_qualifications", "content": "Original generated."}
+                ],
+            }
+        }
+        (tmp_path / "generated_fields.json").write_text(
+            json.dumps(gf_data), encoding="utf-8"
+        )
+
+        from pipeline.agents.field_editor import run as field_editor_run
+
+        edits = [{
+            "field_path": "generated_fields[0].content",
+            "instruction": "make shorter",
+        }]
+
+        with patch("pipeline.agents.field_editor.call_claude") as mock_call:
+            mock_call.return_value = {"action": "apply", "value": "Short."}
+            _, _, kq_source = field_editor_run(tmp_path, edits)
+
+        assert kq_source == "ai_generated"
+
+    def test_kq_source_is_extracted_when_only_raw_present(self, tmp_path):
+        import json
+        gf_data = {
+            "generated": {
+                "key_qualifications": ["Raw bullet"],
+                "generated_fields": [],
+            }
+        }
+        (tmp_path / "generated_fields.json").write_text(
+            json.dumps(gf_data), encoding="utf-8"
+        )
+
+        from pipeline.agents.field_editor import run as field_editor_run
+
+        edits = [{"field_path": "key_qualifications[0]", "instruction": "rewrite"}]
+
+        with patch("pipeline.agents.field_editor.call_claude") as mock_call:
+            mock_call.return_value = {"action": "apply", "value": "Rewritten."}
+            _, _, kq_source = field_editor_run(tmp_path, edits)
+
+        assert kq_source == "extracted"
+
+
+class TestFieldEditResponseKqSource:
+    """FieldEditResponse accepts kq_source and rejects invalid values."""
+
+    def test_accepts_all_three_valid_labels(self):
+        from api.models.requests import FieldEditResponse
+        base = dict(
+            session_id="abc",
+            status="checkpoint_3_pending",
+            round=2,
+            applied=[],
+            skipped=[],
+            message="ok",
+        )
+        for label in ("ai_generated", "extracted", "absent"):
+            resp = FieldEditResponse(**base, kq_source=label)
+            assert resp.kq_source == label
+
+    def test_rejects_invalid_label(self):
+        from pydantic import ValidationError
+        from api.models.requests import FieldEditResponse
+        with pytest.raises(ValidationError):
+            FieldEditResponse(
+                session_id="abc",
+                status="checkpoint_3_pending",
+                round=2,
+                applied=[],
+                skipped=[],
+                message="ok",
+                kq_source="unknown_value",
+            )

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import bcrypt
 import jwt
@@ -156,9 +159,15 @@ def login_with_google(id_token: str) -> dict[str, Any]:
             settings.google_client_id,
         )
     except Exception as exc:
+        logger.warning("Google ID token verification failed: %s", exc, exc_info=settings.debug)
+        detail = (
+            f"Invalid Google token: {exc}"
+            if settings.debug
+            else "Invalid Google token"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Google token",
+            detail=detail,
         ) from exc
 
     email = str(payload.get("email") or "").lower()

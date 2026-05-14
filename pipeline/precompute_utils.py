@@ -6,6 +6,9 @@ to move arithmetic out of prompts and into Python where it is reliable.
 
 Consumers
 ---------
+  pipeline/agents/cv_tor_mapper.py    — keyword_overlap_score / geography_score /
+                                        compute_composite_score / compute_project_duration
+                                        (duration pre-compute moved upstream in Round 5)
   pipeline/agents/fields_generator.py  — compute_project_duration / compute_project_year
   pipeline/agents/compressor.py        — count_words_per_field / count_compressible_words_total
                                          restore_protected_fields
@@ -13,6 +16,7 @@ Consumers
 
 from __future__ import annotations
 
+import datetime
 import re
 from typing import Any
 
@@ -108,8 +112,10 @@ _MONTH_MAP: dict[str, int] = {
     "october": 10, "november": 11, "december": 12,
 }
 
-_CURRENT_YEAR = 2026
-_CURRENT_MONTH = 1  # conservative — treat "present" as Jan of current year
+def _current_date() -> tuple[int, int]:
+    """Return (year, month) for today. Evaluated at call time so tests can patch it."""
+    today = datetime.date.today()
+    return today.year, today.month
 
 
 def _parse_date(raw: str | None) -> tuple[int, int] | None:
@@ -119,14 +125,14 @@ def _parse_date(raw: str | None) -> tuple[int, int] | None:
     Accepts:
       "March 2019" / "march 2019" / "Mar 2019"
       "2019"                       → (2019, 1)
-      "Present" / "ongoing" / …   → (_CURRENT_YEAR, _CURRENT_MONTH)
+      "Present" / "ongoing" / …   → (today.year, today.month) via _current_date()
       None / ""                    → None
     """
     if not raw:
         return None
     s = raw.strip()
     if _PRESENT_RE.search(s):
-        return (_CURRENT_YEAR, _CURRENT_MONTH)
+        return _current_date()
 
     year_m = _YEAR_RE.search(s)
     if not year_m:
@@ -166,7 +172,7 @@ def compute_project_duration(date_from: str | None, date_to: str | None) -> str:
     Examples:
       ("January 2018", "June 2019")  → "17 months"  (< 18 months)
       ("2015", "2019")               → "4 years"
-      ("March 2020", "Present")      → uses _CURRENT_YEAR / _CURRENT_MONTH
+      ("March 2020", "Present")      → uses today's year/month via _current_date()
       ("", "2019")                   → ""
     """
     parsed_from = _parse_date(date_from)
@@ -255,3 +261,128 @@ def restore_protected_fields(
             restored_paths.append(field)
 
     return restored, restored_paths
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — Python relevance scoring helpers (Round 5)
+# ---------------------------------------------------------------------------
+
+
+def keyword_overlap_score(
+    project: dict,
+    keywords: list[str],
+) -> tuple[float, list[str]]:
+    """
+    Compute a keyword-overlap relevance score for a single project.
+
+    Concatenates ``project_name``, ``main_project_features``,
+    ``activities_performed``, and ``positions_held`` into a searchable text
+    blob, then counts how many keywords from *keywords* appear in it
+    (case-insensitive substring match).
+
+    Parameters
+    ----------
+    project : dict
+        A single ``RelevantProject`` dict from ``CVData.relevant_projects``.
+    keywords : list[str]
+        Merged keyword list from all three ``ScoringKeywords`` lists
+        (``role_implied`` + ``scope_implied`` + ``explicit``).
+
+    Returns
+    -------
+    (score, matched_keywords) : (float, list[str])
+        ``score`` is ``hits / len(keywords)`` clamped to ``[0.0, 1.0]``.
+        Returns ``(0.0, [])`` when *keywords* is empty.
+    """
+    if not keywords:
+        return 0.0, []
+
+    text = " ".join([
+        project.get("main_project_features", "") or "",
+        project.get("activities_performed", "") or "",
+        project.get("positions_held", "") or "",
+        project.get("project_name", "") or "",
+    ]).lower()
+
+    matched: list[str] = []
+    for kw in keywords:
+        if kw.lower() in text:
+            matched.append(kw)
+
+    score = min(1.0, len(matched) / len(keywords))
+    return score, matched
+
+
+def geography_score(
+    project: dict,
+    required_countries: list[str],
+) -> tuple[float, list[str]]:
+    """
+    Compute a geography-match relevance score for a single project.
+
+    Checks whether the project's ``location`` and/or ``country`` fields
+    overlap with *required_countries*.
+
+    Match tiers
+    -----------
+    - Exact / substring match (case-insensitive): 1.0
+    - Partial region match (any word longer than 4 chars from the required
+      string appears in the project location): 0.5
+    - No match: 0.0
+
+    Returns the highest tier found plus the list of matched country strings.
+    Returns ``(0.0, [])`` when *required_countries* is empty.
+    """
+    if not required_countries:
+        return 0.0, []
+
+    project_location = (
+        (project.get("location", "") or "") + " " +
+        (project.get("country", "") or "")
+    ).lower().strip()
+
+    best_score = 0.0
+    matched: list[str] = []
+
+    for req in required_countries:
+        req_lower = req.lower()
+        if req_lower in project_location or project_location in req_lower:
+            best_score = max(best_score, 1.0)
+            matched.append(req)
+        else:
+            # Partial / regional match — any significant word overlap
+            req_words = [w for w in req_lower.split() if len(w) > 4]
+            loc_words = project_location.split()
+            if req_words and any(w in loc_words for w in req_words):
+                best_score = max(best_score, 0.5)
+                matched.append(req)
+
+    return best_score, matched
+
+
+def compute_composite_score(
+    kw_score: float,
+    geo_score: float,
+    keyword_weight: float = 0.35,
+    geography_weight: float = 0.15,
+) -> float:
+    """
+    Combine the two Python-computable scoring dimensions into a partial
+    composite covering 50% of the total relevance weighting.
+
+    The LLM (Agent 3) adds the remaining 50% (tasks 30% + competencies 20%)
+    by adjusting the composite within ±0.10 based on its semantic assessment.
+
+    Parameters
+    ----------
+    kw_score : float    Keyword overlap score (0.0–1.0).
+    geo_score : float   Geography match score (0.0, 0.5, or 1.0).
+    keyword_weight : float   Default 0.35 (per scoring design doc).
+    geography_weight : float Default 0.15 (per scoring design doc).
+
+    Returns
+    -------
+    float
+        Partial composite score in [0.0, 1.0].
+    """
+    return round(kw_score * keyword_weight + geo_score * geography_weight, 4)

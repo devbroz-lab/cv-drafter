@@ -60,11 +60,16 @@ their "if not found, leave as []" rules.
   items with `field_key="detailed_tasks"` into `generated_fields`. This is
   intentional (uniformity). `DetailedTask` is legacy/unused in the active pipeline.
 - **`employment_record: list[EmploymentRecord]`** — WB only. GIZ leaves as `[]`.
-- **`extraction_warnings: list[str]`** — defined on the schema but not
-  actively populated by Agent 1 post-processing in the current codebase.
-  Treat as aspirational. Do not rely on it in downstream agent prompts.
+- **`extraction_warnings: list[str]`** — actively populated by Agent 1
+  when it detects non-standard proficiency scales, reversed date ranges, or
+  other extraction quality concerns. Confirmed via live session runs (Run 4
+  flagged a numeric language scale; Run 4 flagged reversed date ranges).
+  Agent 5 and Agent 7 may read this field for context; treat it as advisory.
 - **`activities_performed`** on `RelevantProject` — intentionally left empty
-  in GIZ extraction. Agent 5 must not require it as evidence.
+  in GIZ extraction. Agent 5 must not require it as evidence. Also left as `""`
+  in employment-only fallback mode (Fix CC): descriptive employment text is routed
+  to `main_project_features` instead, so the renderer's project-overview paragraph
+  is populated first.
 
 ### DistilledToR — key points for prompt writers
 
@@ -152,6 +157,35 @@ normal sessions. `passed: false` is surfaced via `GET /review` instead.
 | P17 — "Character for character" unenforceable (A6) | **Implemented** | `compressor.py` (prompt + post-compute restore) |
 | P18 — No fallback when target unreachable (A6) | **Implemented** | `compressor.py`, `models.py` (CompressionResult) |
 | P19 — generation_warnings passthrough missing (A6) | **Implemented** | `compressor.py` |
+| Agent 4 model upgrade (Haiku → Sonnet) | **Implemented** | `pipeline/config.py` (`ANTHROPIC_SYNTHESIS_MODEL`), `fields_generator.py` |
+| Model centralisation (A1–A3, A5, A6 import from config) | **Implemented** | `pipeline/config.py`, `cv_extractor.py`, `tor_summarizer.py`, `cv_tor_mapper.py`, `compressor.py` |
+| Hard-block validator after A4 (empty `generated_fields[].content`) | **Implemented** | `pipeline/validators.py` (new), `pipeline/orchestrator.py` |
+| CEFR centralisation at A1 write time | **Implemented** | `pipeline/agents/cv_extractor.py` (`_populate_cefr_fields`) |
+| Agent 7 `kq_source` surfaced via API | **Implemented** | `field_editor.py` (`kq_source_label`), `orchestrator.py`, `api/models/requests.py`, `api/routers/sessions.py` |
+| Fix 9 — `FieldShortened.subfield` optional | **Implemented** | `models.py` |
+| Fix 7 — `map_cefr` parenthetical + numeric normalisation | **Implemented** | `pipeline/utils/cefr.py` |
+| Fix J — Python enforcement of A3 threshold | **Implemented** | `pipeline/agents/cv_tor_mapper.py` (`_enforce_threshold_and_cap`) |
+| Fix 8 Part 1 — Hard project cap (`MAX_PROJECTS_TO_KEEP = 6`) | **Implemented** | `pipeline/agents/cv_tor_mapper.py` |
+| Fix 8 Part 3 — Per-project text cap before A4 | **Implemented** | `pipeline/agents/fields_generator.py` (`_truncate_project_text_for_a4`) |
+| Fix 8 Part 2 — A4 prompt priority + minimum output guarantee | **Implemented** | `pipeline/agents/fields_generator.py` (`SYSTEM_PROMPT_A4`) |
+| Fix M Part 1 — Numeric 1–5 CEFR scale mapping | **Implemented** | `pipeline/utils/cefr.py` (`NUMERIC_SCALE_TO_CEFR`, rewritten `map_cefr`) |
+| Fix M Part 2 — A4 truncation-text restoration before write | **Implemented** | `pipeline/agents/fields_generator.py` (`_restore_truncated_project_text`, `cv_data_full` preservation) |
+| Fix N — Project floor/threshold/cap recalibration | **Implemented** | `pipeline/agents/cv_tor_mapper.py` (constants + `_compute_threshold` + dynamic floor + `SYSTEM_PROMPT_A3` mirror) |
+| Fix O — Numeric CEFR scale direction detection + 1_best default | **Implemented** | `pipeline/utils/cefr.py` (`NUMERIC_SCALE_TO_CEFR_INVERTED`, `map_numeric_scale_inverted`), `models.py` (`language_scale_direction`), `cv_extractor.py` (`_apply_cefr_with_direction`, `_populate_cefr_fields`, prompt) |
+| Fix P — A4 prompt: prefer candidate's own KQ bullets when bullet-style | **Implemented** | `pipeline/agents/fields_generator.py` (`SYSTEM_PROMPT_A4` source-preference subsection) |
+| Fix Q — A1 prompt: label-driven `other_skills` routing | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` routing section) |
+| Fix R — `references` and `certification_declaration` schema + extraction + context | **Implemented (rendering deferred)** | `models.py` (`Reference`, new CVData fields), `cv_extractor.py` (prompt), `templates/giz.py`, `templates/wb.py` |
+| Fix U — A1 unfilled placeholder detection | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` placeholder detection section) |
+| Fix 2 — All agents to Sonnet | **Implemented** | `pipeline/config.py` (`ANTHROPIC_MODEL` → Sonnet) |
+| Fix 4b — A2 `scoring_keywords` extraction | **Implemented** | `models.py` (`ScoringKeywords`, `DistilledToR.scoring_keywords`), `pipeline/agents/tor_summarizer.py` (`SYSTEM_PROMPT_A2`) |
+| Fix 4 — Python relevance scoring for Agent 3 + duration upstream | **Implemented** | `pipeline/precompute_utils.py` (new scoring helpers), `pipeline/agents/cv_tor_mapper.py` (real implementation + upstream duration + A3 prompt), `pipeline/agents/fields_generator.py` (pre-compute call removed) |
+| Fix 5b — Soft-flag manifest warnings | **Implemented** | `pipeline/manifest.py` (`append_warning`), `pipeline/validators.py` (3 check functions), `pipeline/orchestrator.py` (wired in phase 3) |
+| Fix Z — A6 pre-processing word cap | **Implemented** | `pipeline/agents/compressor.py` (`A6_INPUT_PROJECT_WORD_CAP`, `_truncate_project_text_for_a6`, `append_warning` calls for truncation events) |
+| Fix AA — A4 guarantee extended to `detailed_tasks` | **Implemented** | `pipeline/agents/fields_generator.py` (`SYSTEM_PROMPT_A4` minimum output guarantee — explicit WB `detailed_tasks` + geographic exemption rule) |
+| Fix V — A1 merged-cell project name extraction | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` `### Merged-cell and two-column project tables` section) |
+| Fix W — A1 date ordering validation + auto-correct | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` `### Date ordering validation` section — all four date-field types) |
+| Fix Y — A2 `scoring_keywords` reorder + soft-flag | **Implemented** | `pipeline/agents/tor_summarizer.py` (section moved after `position_title`; non-empty guarantee), `pipeline/validators.py` (`check_tor_summarizer_warnings`), `pipeline/orchestrator.py` (wired in `run_phase1`) |
+| Fix CC — A1 employment-only fallback: `description → main_project_features` | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` `### Employment-only fallback` section: `description → main_project_features`, `employer → project_name + company`, `activities_performed` / `client` / `donor` left as `""`; `_apply_employment_fallback` Python safety net with matching routing; short-description warning references `main_project_features`) |
 
 ---
 
@@ -350,7 +384,7 @@ add to, or remove from it."
 |------|---------------------|
 | `DetailedTask` model unused | Intentional — WB tasks use `GeneratedField` for pipeline uniformity. Document in schema comments only. |
 | Structured `DistilledToR` fields not wired | Schema-level aspirations, not guaranteed by post-processing. No prompt references until deterministically populated. |
-| `extraction_warnings` aspirational | Not actively populated by Agent 1. No downstream prompt changes until wired. |
+| `extraction_warnings` aspirational | ~~Not actively populated by Agent 1~~ — **corrected in Round 2**: Run 4 confirmed it is actively populated. This row is superseded by the updated §3 entry above. |
 | `reviewer_blocked` DB status | Dead for normal sessions. Docs should be updated to reflect manifest-only usage. |
 
 ---
@@ -368,3 +402,15 @@ add to, or remove from it."
 | Experience gap injection | Python post-processing after A5 | `content_reviewer._inject_experience_gap_finding` |
 | Word count tolerance filtering | Python post-processing after A5 | `content_reviewer._filter_word_count_pedantry` |
 | Relevance scoring (deferred) | Python pre-processing before A3 | `cv_tor_mapper._precompute_relevance_scores` stub — see `RELEVANCE_SCORING_DESIGN.md` |
+| Threshold enforcement + project cap | Python post-processing after A3 (in `run()`) | `cv_tor_mapper._enforce_threshold_and_cap` |
+| Per-project text cap for A4 input | Python pre-processing before A4 | `fields_generator._truncate_project_text_for_a4` |
+| CEFR field population | Python post-processing after A1 LLM | `cv_extractor._populate_cefr_fields` using `pipeline.utils.cefr.map_cefr` |
+| A4 input text restoration | Python post-processing after A4 LLM (in `fields_generator.run`) | `fields_generator._restore_truncated_project_text` restores `activities_performed` / `main_project_features` from pre-truncation source before writing `generated_fields.json` |
+| CEFR scale direction mapping | Python post-processing after A1 LLM (in `cv_extractor._populate_cefr_fields`) | `_apply_cefr_with_direction(raw, direction)` — uses `map_cefr` (1_best default) or `map_numeric_scale_inverted` (1_worst) based on `CVData.language_scale_direction` |
+| A3 threshold + cap enforcement | Python post-processing after A3 LLM (in `cv_tor_mapper.run`) | `_enforce_threshold_and_cap` — thresholds `0.30/0.40/0.50`; floor `min(MIN, total)`; current constants: `MIN=5`, `MAX=15` |
+| A3 Python relevance pre-compute | Python pre-processing before A3 LLM (in `cv_tor_mapper.run`) | `_precompute_relevance_scores` — keyword overlap (35%) + geography (15%) = 50% Python-computed; LLM adjusts ±0.10 for semantic dimensions |
+| A2 scoring keywords | LLM extraction in A2 (`tor_summarizer.run`) | `SYSTEM_PROMPT_A2` `### scoring_keywords` (reordered to after `position_title`, Fix Y) — three lists (`role_implied`, `scope_implied`, `explicit`) with non-empty guarantee |
+| A6 pre-processing truncation | Python pre-processing before A6 LLM | `compressor._truncate_project_text_for_a6` — caps `activities_performed` / `main_project_features` at `A6_INPUT_PROJECT_WORD_CAP` (150) words per project; emits `input_field_truncated` manifest warnings |
+| A1 extraction normalisation | LLM prompt instructions in A1 | `SYSTEM_PROMPT_A1` — unfilled placeholder detection (Fix U); merged-cell project name extraction (Fix V); date ordering validation + auto-correct (Fix W); employment-only fallback routing (Fix CC). |
+| Employment-only fallback (Python safety net) | Python post-processing after A1 LLM (in `cv_extractor.run`) | `cv_extractor._apply_employment_fallback` — when `relevant_projects` is empty and `employment_record` has entries, maps each employment entry: `description → main_project_features`, `employer → project_name + company`, `activities_performed / client / donor = ""`. Idempotent — skips when projects already present. |
+| Manifest soft-flag warnings | Post-processing after A2, A4, A5, A6 | `check_tor_summarizer_warnings` (after A2), `check_fields_generator_warnings`, `check_content_reviewer_warnings`, `check_compressor_warnings` — results appended via `manifest.append_warning` |

@@ -16,8 +16,9 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import DistilledToR
+from pipeline.config import ANTHROPIC_MODEL
 from pipeline.manifest import update_step
-from pipeline.utils import strip_code_fences
+from pipeline.utils import extract_json_object, strip_code_fences
 
 client = Anthropic()
 
@@ -27,9 +28,13 @@ is to read a Terms of Reference (ToR) document and extract **every distinct
 expert role / expert pool** it describes into a JSON array of DistilledToR
 objects, each strictly conforming to the schema shown below.
 
-## Output rules
+## Output contract (READ FIRST)
+- Your entire response must be a single JSON object — nothing else.
+- The FIRST non-whitespace character MUST be `{`. The LAST MUST be `}`.
+- No preamble. No reasoning text. No "Here is the JSON". No explanation.
+- No markdown fences (no ```json, no ```).
+- Do all reasoning silently. Only the JSON object is emitted.
 - Respond with a single top-level JSON object: { "pools": [ <DistilledToR>, ... ] }
-- No preamble, no explanation, no markdown fences.
 - Each element of "pools" must be a valid, complete DistilledToR object.
 - Every field defined in the schema must be present in each pool object.
 - All string fields default to "" if not found.
@@ -60,6 +65,56 @@ objects, each strictly conforming to the schema shown below.
 - Extract the exact title of the expert role being filled.
 - Do not paraphrase — copy the title verbatim, then apply Title Case
   normalisation.
+
+### scoring_keywords
+
+Populate the `scoring_keywords` block with keyword sets that will be used by
+the Python relevance scorer to evaluate how well each CV project matches this
+role. Three lists are required:
+
+**`explicit`** — directly stated requirements. Extract verbatim from the ToR:
+- Geographic requirements (countries, regions).
+- Minimum years of experience stated numerically.
+- Named sectors, programmes, or donor-specific terminology.
+- Examples: `["South Africa", "7 years experience", "electricity sector",
+  "REIPPPP"]`
+
+**`scope_implied`** — thematic areas described in the project scope or
+background section. Identify the technical domains the project operates in,
+even if not listed as explicit requirements:
+- Technology types, methodologies, systems, standards.
+- Examples: `["grid integration", "renewable energy", "distribution network",
+  "prosumers", "energy storage", "voltage regulation"]`
+
+**`role_implied`** — technical terms a competent expert holding this position
+title would routinely work with, even if the ToR does not spell them out. This
+is a light **inferential** step: reason from the position title and pool name
+to the technical vocabulary of the field.
+- A "Grid Code Expert" implies: `["grid code", "stability criteria",
+  "transmission planning", "balancing mechanism", "ancillary services"]`
+- A "Regulatory Economist" implies: `["tariff design", "cost of service study",
+  "regulatory accounting", "rate of return", "revenue requirement"]`
+- Examples must be specific technical terms — never generic terms like
+  "project management" or "stakeholder engagement".
+
+**Quantity guidelines**:
+- Each list should contain 5–15 keywords.
+- Prefer multi-word technical terms over single generic words.
+- Use lowercase unless the term is an acronym or proper noun.
+- If the source text provides no signal for a list, leave it as `[]`.
+
+**Non-empty guarantee**: For any non-empty ToR input, at least one of the
+three keyword lists must be populated. Even on long PDF inputs:
+- `role_implied`: infer at least 3–5 keywords from the `position_title`
+  alone. You always have the position title even before reading the full ToR.
+  Running on Sonnet, you have the reasoning capacity to produce role-implied
+  keywords from the title alone — do not return an empty `role_implied` list
+  unless `position_title` is itself empty.
+- `explicit`: extract at minimum any geography and experience threshold
+  requirements named in the ToR.
+
+Returning all three lists empty for a non-empty ToR is treated as an A2
+extraction failure by downstream validation.
 
 ### sector
 - Extract the primary sector as a single short noun phrase.
@@ -166,7 +221,7 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     )
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=ANTHROPIC_MODEL,
         max_tokens=16000,
         system=_build_prompt(SYSTEM_PROMPT_A2),
         messages=[{"role": "user", "content": content}],
@@ -180,6 +235,7 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
         )
 
     raw = strip_code_fences(response.content[0].text.strip())
+    raw = extract_json_object(raw)
 
     try:
         parsed = json.loads(raw)

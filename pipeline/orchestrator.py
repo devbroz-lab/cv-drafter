@@ -47,7 +47,15 @@ from pipeline.agents import (
     tor_summarizer,
 )
 from pipeline.extractor import extract_text
-from pipeline.manifest import create_manifest, get_step_status, update_step
+from pipeline.manifest import append_warning, create_manifest, get_step_status, update_step
+from pipeline.validators import (
+    PipelineValidationError,
+    check_compressor_warnings,
+    check_content_reviewer_warnings,
+    check_fields_generator_warnings,
+    check_tor_summarizer_warnings,
+    validate_fields_generator_output,
+)
 from pipeline.paths import RUNS_ROOT, get_run_dir
 
 log = logging.getLogger(__name__)
@@ -155,6 +163,11 @@ async def run_phase1(
             f1.result()  # re-raises any exception from agent 1
             f2.result()  # re-raises any exception from agent 2
 
+        # Fix Y: soft-flag check after A2 for empty scoring_keywords
+        for w in check_tor_summarizer_warnings(run_dir):
+            log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
+            append_warning(run_dir, **w)
+
         # ── Halt at checkpoint 1 ──────────────────────────────────────────
         update_step(run_dir, "checkpoint_1", "pending")
         set_checkpoint_pending(session_id, 1)
@@ -214,6 +227,28 @@ async def run_phase3(*, session_id: str) -> None:
     try:
         _run_if_needed(run_dir, "fields_generator", fields_generator.run, run_dir)
 
+        # Hard-block validation: halt if Agent 4 produced no usable content.
+        # This catches the silent failure mode where the LLM returns a valid
+        # schema skeleton with every content field empty.  Overrides the
+        # fields_generator manifest step to "failed" so the manifest view
+        # accurately reflects the failure point.
+        try:
+            validate_fields_generator_output(run_dir)
+        except PipelineValidationError as val_exc:
+            log.error(
+                "Session %s Phase 3 halted by validator: %s",
+                session_id,
+                val_exc,
+            )
+            update_step(run_dir, "fields_generator", "failed")
+            set_failed(session_id, str(val_exc))
+            return
+
+        # Fix 5b: soft-flag quality warnings after A4 (non-blocking)
+        for w in check_fields_generator_warnings(run_dir):
+            log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
+            append_warning(run_dir, **w)
+
         if get_step_status(run_dir, "content_reviewer") != "done":
             _, passed = content_reviewer.run(run_dir)
             if not passed:
@@ -222,6 +257,11 @@ async def run_phase3(*, session_id: str) -> None:
                     "continuing to compressor (non-blocking mode)",
                     session_id,
                 )
+
+        # Fix 5b: soft-flag quality warnings after A5 (non-blocking)
+        for w in check_content_reviewer_warnings(run_dir):
+            log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
+            append_warning(run_dir, **w)
 
         await _run_compressor_and_halt(session_id, run_dir)
 
@@ -280,7 +320,7 @@ def _build_field_editor_context(run_dir: Path, row: dict) -> tuple[str, dict]:
     return donor, cv_context
 
 
-def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[str], list[dict]]:
+def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[str], list[dict], str]:
     """
     Apply user-directed field edits to generated_fields.json and transition
     the session to checkpoint_3_pending.
@@ -303,6 +343,9 @@ def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[s
     skipped : list[dict]
         Each item is {"path": str, "reason": str} — passthrough from
         field_editor.run().  Reason is capped at 200 chars.
+    kq_source : str
+        API-facing label for the active KQ source after edits are applied.
+        One of ``"ai_generated"``, ``"extracted"``, or ``"absent"``.
     """
     run_dir = get_run_dir(session_id)
     row = get_session_row(session_id) or {}
@@ -310,7 +353,9 @@ def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[s
     # P5: build donor and cv_context for field editor context enrichment
     donor, cv_context = _build_field_editor_context(run_dir, row)
 
-    applied, skipped = field_editor.run(run_dir, edits, donor=donor, cv_context=cv_context)
+    applied, skipped, kq_source = field_editor.run(
+        run_dir, edits, donor=donor, cv_context=cv_context
+    )
 
     # Reset checkpoint_3 and renderer manifest steps so Phase 4 will re-run
     # on the next POST /approve/checkpoint_3.
@@ -319,12 +364,13 @@ def run_field_editor_task(*, session_id: str, edits: list[dict]) -> tuple[list[s
 
     set_checkpoint_pending(session_id, 3)
     log.info(
-        "Session %s field_editor complete — applied=%s skipped=%s → checkpoint_3_pending",
+        "Session %s field_editor complete — applied=%s skipped=%s kq_source=%s → checkpoint_3_pending",
         session_id,
         applied,
         skipped,
+        kq_source,
     )
-    return applied, skipped
+    return applied, skipped, kq_source
 
 
 async def _run_compressor_and_halt(session_id: str, run_dir: Path) -> None:
@@ -344,6 +390,11 @@ async def _run_compressor_and_halt(session_id: str, run_dir: Path) -> None:
         target_words=cp["target_words"],
         compression_ratio=cp["compression_ratio"],
     )
+
+    # Fix 5b: soft-flag quality warnings after A6 (non-blocking)
+    for w in check_compressor_warnings(run_dir):
+        log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
+        append_warning(run_dir, **w)
 
     update_step(run_dir, "checkpoint_3", "pending")
     set_checkpoint_pending(session_id, 3)

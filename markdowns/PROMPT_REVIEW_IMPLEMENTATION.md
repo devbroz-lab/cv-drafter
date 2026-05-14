@@ -163,3 +163,406 @@
 - `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` (this file)
 
 **Total**: 20 files touched, 77/77 tests passing.
+
+---
+
+## Round 2 — Pipeline Diagnostic Fixes (May 2026)
+
+Implements fixes identified in `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md`.
+
+### Model centralisation + Fix 1 (Agent 4 → Sonnet)
+
+All pipeline agents now import their model string from `pipeline/config.py` rather than hardcoding it at the call site.  Two constants are defined:
+
+- `ANTHROPIC_MODEL` — Haiku; default for A1, A2, A3, A5, A6.
+- `ANTHROPIC_SYNTHESIS_MODEL` — Sonnet; used exclusively by A4 (`fields_generator`).  This is Fix 1: A4 is the sole generative synthesis agent and requires Sonnet-class reasoning to produce ToR-grounded qualification bullets across four simultaneous input blocks.
+
+Affected agents: `cv_extractor.py`, `tor_summarizer.py`, `cv_tor_mapper.py`, `fields_generator.py`, `compressor.py`.  `content_reviewer.py` already imported `ANTHROPIC_MODEL`; no change.  `field_editor.py` retains its own module-level `MODEL` constant (Dev 2's independent decision).
+
+### Fix 5a — Hard-block validator after Agent 4
+
+New `pipeline/validators.py` introduces `PipelineValidationError` and `validate_fields_generator_output`.  The validator reads `generated_fields.json` after A4 and raises if every `generated_fields[i].content` is empty (all-or-nothing rule matching the observed silent failure mode).
+
+Wired in `orchestrator.run_phase3` between the `fields_generator.run` call and `content_reviewer.run`.  On failure: `fields_generator` manifest step is overridden from `done` to `failed`; `set_failed(session_id, message)` is called; A5 and A6 do not run.
+
+### Fix 3 — CEFR centralised at Agent 1 write time
+
+`_populate_cefr_fields(parsed: CVData)` added to `pipeline/agents/cv_extractor.py`.  Called after LLM response parsing and param injection, before `cv_data.json` is written.  Maps `*_raw` → `*_cefr` for every language entry whose structured field is empty, using `pipeline.utils.cefr.map_cefr`.  Idempotent — never overwrites an already-populated value.
+
+Downstream effects:
+- `templates/giz.py → _resolve_cefr` fallback remains structurally correct; it now exercises only for sessions pre-dating this fix or genuinely empty raw values.
+- `field_editor.py` CEFR enrichment block (Fix 3 from Round 1) remains as a defensive fallback; becomes a no-op in normal operation.
+- Agent 1 system prompt unchanged — the LLM correctly leaves `*_cefr` fields empty; Python populates them.
+
+### Fix 6 — Agent 7 routing decision surfaced via API
+
+`kq_source_label(generated: dict) -> str` added to `field_editor.py` as a public helper.  Translates `_key_qualification_source`'s internal return to API-facing labels:
+
+| Internal | API label | Meaning |
+|----------|-----------|---------|
+| `"generated_fields"` | `"ai_generated"` | A4's ToR-tailored content is active |
+| `"raw"` | `"extracted"` | A1's raw extraction is active (A4 produced no usable content) |
+| `"none"` | `"absent"` | Neither source has bullets |
+
+The outer `field_editor.run()` now returns `(applied, skipped, kq_source)` — third value computed from the post-edit state of `mutated`.  `orchestrator.run_field_editor_task` threads it through.  `FieldEditResponse` gains a required `kq_source: Literal["ai_generated", "extracted", "absent"]` field.  The router destructures all three values and passes `kq_source` into the response.
+
+The label reflects the post-edit state so a successful edit that promotes the source (e.g. a write to `generated_fields[j].content` that populates a previously absent entry) is reflected accurately.
+
+### New files (3)
+
+- `pipeline/validators.py`
+- `tests/test_validators.py`
+- `tests/test_cv_extractor_cefr.py`
+
+### Modified files (11)
+
+- `pipeline/config.py`
+- `pipeline/agents/cv_extractor.py`
+- `pipeline/agents/tor_summarizer.py`
+- `pipeline/agents/cv_tor_mapper.py`
+- `pipeline/agents/fields_generator.py`
+- `pipeline/agents/compressor.py`
+- `pipeline/agents/field_editor.py`
+- `pipeline/orchestrator.py`
+- `api/models/requests.py`
+- `api/routers/sessions.py`
+- `tests/test_field_editor_context.py`
+- `tests/test_field_editor_skip_reasons.py` (pre-existing `_base_kwargs` updated for new required field)
+
+### Documentation updated (5)
+
+- `markdowns/PIPELINE_CONTEXT.md`
+- `markdowns/PROMPT_REVIEW_CONTEXT.md`
+- `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` (this file)
+- `markdowns/RUNS_ARTIFACTS_CONTEXT.md`
+- `markdowns/API.md`
+- `markdowns/FRONTEND_SKIP_REASONS_CONTEXT.md`
+
+**Total Round 2**: 14 files touched, 168/168 tests passing.
+
+---
+
+## Round 3 — Diagnostic Fixes Round 2 (May 2026)
+
+Implements Fixes 7, 8 (Parts 1/2/3), 9, and Fix J from `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md`.
+
+### Fix 9 — `FieldShortened.subfield` optional
+
+`models.py:515` — `subfield: str | None = Field(default=None, ...)`.  Agent 6 emits
+`null` for dot-path field entries and bracket-index strings for list entries — both now
+deserialise cleanly.  Backward-compatible with existing `""` values on disk.
+
+### Fix 7 — `map_cefr` normalisation
+
+`pipeline/utils/cefr.py` — added `CEFR_UNRESOLVABLE_SENTINEL = "?"`, regex
+`_PAREN_PATTERN`, `_NUMERIC_PATTERN`, and a rewritten `map_cefr` that handles
+parenthetical formats (`"Proficient (C2)"` → `"C2"`) and numeric scale inputs
+(`"1"`, `"3/5"` → `"?"`).  Propagates automatically to `cv_extractor.py`,
+`templates/giz.py`, and `field_editor.py` — no call-site changes.
+
+### Fix J + Fix 8 Part 1 — Python threshold enforcement + project cap
+
+`pipeline/agents/cv_tor_mapper.py`:
+- `MAX_PROJECTS_TO_KEEP = 6` constant alongside existing `MIN_PROJECTS_TO_KEEP = 2`.
+- `_compute_threshold(total)` mirrors the prompt's dynamic threshold rule.
+- `_enforce_threshold_and_cap(parsed, original_projects)` runs in-place after LLM
+  parse, before `CVData.model_validate`. Applies threshold enforcement, minimum
+  guarantee restoration, and cap truncation in sequence. Preserves original CV
+  document order when rebuilding `data.relevant_projects`. Appends warning strings
+  to `alignment.warnings` for each action taken.
+
+### Fix 8 Part 3 — Per-project text cap
+
+`pipeline/agents/fields_generator.py`:
+- `A4_INPUT_PROJECT_WORD_CAP = 150` constant.
+- `_truncate_project_text_for_a4(cv_data)` deep-copies `cv_data` and trims
+  `activities_performed` and `main_project_features` per project to the cap with
+  a `"…"` suffix. Called between `_precompute_project_dates` and user message
+  assembly. `mapped_cv.json` on disk is not affected.
+- `import copy` moved to module-level (was inside `_precompute_project_dates`).
+
+### Fix 8 Part 2 — A4 prompt priority + minimum output guarantee
+
+`SYSTEM_PROMPT_A4` in `pipeline/agents/fields_generator.py`:
+- New `## OUTPUT PRIORITY ORDER` section after the intro paragraph: generate
+  `generated_fields` first, fill derived fields second, ensure Part 2 is complete
+  under output-length pressure.
+- New `### Minimum output guarantee` subsection in Part 2: at least one non-empty
+  `GeneratedField` per `generative_field_keys` key even when alignment is weak;
+  never return empty `content`; flag low-confidence entries in `generation_warnings`.
+- Minimum-1 language added inline to both GIZ and WB "how many" subsections.
+
+### New files (5)
+
+- `tests/test_cefr_map.py` — 53 tests
+- `tests/test_cv_tor_mapper.py` — 23 tests
+- `tests/test_fields_generator_text_cap.py` — 16 tests
+- `tests/test_fields_generator_prompt.py` — 9 tests
+- (integration tests in existing `tests/test_cv_extractor_cefr.py` — 2 new)
+
+### Modified files (4)
+
+- `models.py`
+- `pipeline/utils/cefr.py`
+- `pipeline/agents/cv_tor_mapper.py`
+- `pipeline/agents/fields_generator.py`
+- `tests/test_compressor_postprocessing.py` (6 new tests in `TestFieldShortenedOptionalSubfield`)
+
+### Documentation updated (5)
+
+- `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` — Round 2 record, merged duplicate Issue K, all Round 2 fixes marked implemented.
+- `markdowns/PROMPT_REVIEW_CONTEXT.md` — `extraction_warnings` corrected; implementation status rows added; §7 quickref extended.
+- `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` (this file) — Round 3 section.
+- `markdowns/PIPELINE_CONTEXT.md` — `cv_tor_mapper` and `fields_generator` rows updated.
+- `markdowns/RUNS_ARTIFACTS_CONTEXT.md` — `mapped_cv.json` row updated.
+
+**Total Round 3**: 10 files touched, 277/277 tests passing (109 new tests).
+
+---
+
+## Round 4 — Diagnostic Fixes Round 3 (May 2026)
+
+Implements Fix M (Parts 1 and 2) from `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md`.
+
+### Fix M Part 1 — Numeric 1–5 CEFR scale mapping
+
+`pipeline/utils/cefr.py` — complete rewrite of the numeric-scale handling path:
+- `NUMERIC_SCALE_TO_CEFR` public constant: `"1"→"C1"`, `"2"→"B2"`, `"3"→"B1"`, `"4"→"A2"`, `"5"→"A1"`.
+- Private `_try_numeric_scale(token)` helper.
+- Private `_map_numeric_or_sentinel(raw)` handles bare integers (1–5 → mapped; outside → `"?"`), slash-separated all-integer strings (all in-range → joined mapped labels; any out-of-range → `"?"`), and non-numeric inputs (returns `None`).
+- `_BARE_INT_PATTERN` and `_SLASH_NUMERIC_PATTERN` regexes.
+- `map_cefr` step 2 (parenthetical) now also applies numeric-scale mapping on inner text (`"Level (3)"` → `"B1"`).
+- `map_cefr` step 3 delegates to `_map_numeric_or_sentinel`.
+- Module docstring updated to document the full resolution order.
+
+`"?"` sentinel is now reserved exclusively for genuinely unresolvable inputs (integers outside 1–5, slash strings with any out-of-range digit). Propagates automatically to `cv_extractor._populate_cefr_fields`, `templates/giz.py:_resolve_cefr`, and `field_editor.py`'s CEFR enrichment block — no call-site changes.
+
+### Fix M Part 2 — A4 truncation-text restoration
+
+`pipeline/agents/fields_generator.py`:
+- `import logging` + module-level `log = logging.getLogger(__name__)`.
+- `_restore_truncated_project_text(cv_data_out, original_cv_data) -> dict` helper: deep-copies `cv_data_out`, restores `activities_performed` and `main_project_features` from `original_cv_data` by project index (unconditionally). Logs a warning and skips if project counts differ.
+- In `run()`: `cv_data_full = cv_data` assigned after `_precompute_project_dates` and before `_truncate_project_text_for_a4`. After A4 returns and validates: `generated_dict = _restore_truncated_project_text(cv_data_out.model_dump(), cv_data_full)`. `generated_fields.json["generated"]` is written from `generated_dict` instead of `cv_data_out.model_dump()`.
+
+This closes the Issue M leak: the truncated A4-input text (with `"…"` suffix) is no longer written to the artifact. The rendered document will contain the full original project descriptions.
+
+### Modified files (2)
+
+- `pipeline/utils/cefr.py`
+- `pipeline/agents/fields_generator.py`
+
+### Tests updated / added
+
+- `tests/test_cefr_map.py` — `NUMERIC_SCALE_TO_CEFR` imported; `TestNumericScaleSentinel` → `TestNumericScaleMapping` with revised asserts and new cases; parenthetical-numeric test updated.
+- `tests/test_cv_extractor_cefr.py` — `test_numeric_raw_produces_sentinel` updated to `test_numeric_raw_in_range_maps_to_cefr`; 2 new tests (`test_numeric_raw_out_of_range_produces_sentinel`, `test_slash_separated_raw_maps_each_digit`).
+- `tests/test_fields_generator_text_cap.py` — `_restore_truncated_project_text` imported; `TestRestoreTruncatedProjectText` class with 9 tests.
+
+### Documentation updated (5)
+
+- `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` — Issues G/M marked fixed; Fix M section marked implemented; Round 3 record added.
+- `markdowns/PROMPT_REVIEW_CONTEXT.md` — 2 new rows in §5 implementation status; §7 quickref extended.
+- `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` (this file) — Round 4 section.
+- `markdowns/PIPELINE_CONTEXT.md` — `fields_generator` pre-processing row updated.
+- `markdowns/RUNS_ARTIFACTS_CONTEXT.md` — `generated_fields.json` row updated.
+
+**Total Round 4**: 7 files touched, 294/294 tests passing (17 new/updated tests).
+
+---
+
+## Round 5 — Diagnostic Fixes Round 4 (May 2026)
+
+Implements Fix N, Fix P, Fix Q, Fix O, Fix R from `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md`.
+Fix 4, Fix 2, and Fix 5b deferred to Round 6.
+
+### Fix N — Project floor / threshold / cap recalibration
+
+`pipeline/agents/cv_tor_mapper.py`:
+- `MIN_PROJECTS_TO_KEEP = 3` (was 2). `MAX_PROJECTS_TO_KEEP = 10` (was 6).
+- `_compute_threshold` returns `0.30 / 0.40 / 0.50` for `≤5 / ≤10 / >10` projects
+  (previously `0.40 / 0.50 / 0.60`). Calibrated to retain borderline-relevant
+  projects scoring 0.30–0.49 that were being discarded under the previous values.
+- `_enforce_threshold_and_cap`: `effective_floor = min(MIN_PROJECTS_TO_KEEP, total)`
+  at top of function — prevents infinite-loop hazard on thin CVs.
+- `SYSTEM_PROMPT_A3` threshold table updated to mirror new Python values.
+  New `test_prompt_threshold_values_match_python` test guards future drift.
+
+### Fix P — A4 source preference for candidate KQ bullets
+
+`SYSTEM_PROMPT_A4` in `pipeline/agents/fields_generator.py`:
+- New `#### Source preference: condense the candidate's own KQ when bullet-style`
+  subsection under GIZ key_qualifications. When 2+ bullet-style entries exist and
+  are ToR-aligned, A4 selects + condenses rather than generating from scratch.
+  Three from-scratch trigger conditions documented. `source` field guidance added.
+
+### Fix Q — A1 other_skills routing
+
+`SYSTEM_PROMPT_A1` in `pipeline/agents/cv_extractor.py`:
+- New `### Other skills / Certifications / Training routing` section.
+  Label-driven routing: source document label determines field destination.
+  Both sections populated independently when both labels exist.
+
+### Fix O — Numeric CEFR scale direction + default flip
+
+`pipeline/utils/cefr.py`:
+- `NUMERIC_SCALE_TO_CEFR` rewritten to "1_best" default (`1→C2, 2→C1, 3→B2,
+  4→B1, 5→A2`). Breaking change from Round 3's `1→C1` default.
+- `NUMERIC_SCALE_TO_CEFR_INVERTED` added for "1_worst" (`1→A1 … 5→C1`).
+- Public `map_numeric_scale_inverted(token)` helper added.
+
+`models.py`:
+- `from typing import Literal` added. `language_scale_direction: Literal["1_best",
+  "1_worst"] | None = Field(default=None, ...)` added to `CVData`.
+
+`pipeline/agents/cv_extractor.py`:
+- `_apply_cefr_with_direction(raw, direction)` helper routes to default or inverted
+  mapping based on `language_scale_direction`.
+- `_populate_cefr_fields` uses the direction-aware helper.
+- `SYSTEM_PROMPT_A1`: `### Numeric language scale direction` subsection added under
+  `### Language fields` — documents `"1_best"` / `"1_worst"` / null detection.
+
+### Fix R — references + certification_declaration
+
+`models.py`:
+- `Reference(BaseModel)` class with `name`, `title`, `organisation`, `email`,
+  `phone` (all `str = ""`).
+- `CVData.references: list[Reference] = Field(default_factory=list)`.
+- `CVData.certification_declaration: str = Field(default="")`.
+
+`pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1`):
+- `### References` and `### Certification / Declaration` sections added.
+
+`templates/giz.py` and `templates/wb.py` `_build_context`:
+- `"references"` and `"certification_declaration"` keys added to return dict.
+- Static `.docx` templates lack placeholders — rendering deferred to manual edit.
+
+### New files (3)
+
+- `tests/test_cv_extractor_prompt.py` — 8 tests (Q routing, O direction, R sections)
+- `tests/test_models.py` — 14 tests (Reference, CVData new fields, backward compat)
+
+### Modified files (9)
+
+- `pipeline/agents/cv_tor_mapper.py`
+- `pipeline/agents/fields_generator.py`
+- `pipeline/agents/cv_extractor.py`
+- `pipeline/utils/cefr.py`
+- `models.py`
+- `templates/giz.py`
+- `templates/wb.py`
+- `tests/test_cv_tor_mapper.py` (constant/threshold updates + 2 new tests)
+- `tests/test_fields_generator_prompt.py` (3 new tests)
+- `tests/test_cefr_map.py` (1_best defaults + `TestInvertedNumericScale` class)
+- `tests/test_cv_extractor_cefr.py` (assertions updated + 1 new direction test)
+
+### Documentation updated (6)
+
+- `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` — Issues N–R marked fixed; Section 3 Round 4 completed; Round 5 added; Section 4 round table updated; Fix R static-template note in §5.
+- `additions/PIPELINE_DIAGNOSTIC_ROUND_4.md` — Full implementation record in Round 3 format.
+- `markdowns/PROMPT_REVIEW_CONTEXT.md` — 7 new rows in §5; §7 quickref extended.
+- `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` (this file) — Round 5 section.
+- `markdowns/PIPELINE_CONTEXT.md` — `cv_tor_mapper` and `cv_extractor` rows updated.
+- `markdowns/RUNS_ARTIFACTS_CONTEXT.md` — `cv_data.json` row updated.
+
+**Total Round 5**: 14 files touched, 332/332 tests passing (38 new/updated tests).
+
+---
+
+## Round 6 — Diagnostic Fixes Round 5 (May 2026)
+
+Implements Fix U, Fix 2, Fix 4b, Fix 4, and Fix 5b from
+`additions/PIPELINE_DIAGNOSTIC_CONTEXT.md`. Fix S deferred (calibration data
+pending). Full detail in `additions/PIPELINE_DIAGNOSTIC_ROUND_5.md`.
+
+### Fix U — A1 unfilled placeholder detection
+
+`SYSTEM_PROMPT_A1`: `### Unfilled placeholder detection` section added.
+A1 extracts faithfully; appends `extraction_warnings` entry when it detects
+standalone uppercase letters in numeric context, bracket-delimited gaps, or
+underscore gaps. Explicit exclusions for legitimate technical abbreviations.
+
+### Fix 2 — All agents to Sonnet
+
+`pipeline/config.py`: `ANTHROPIC_MODEL = "claude-sonnet-4-20250514"` (was Haiku).
+All five agents (A1/A2/A3/A5/A6) pick up the change from the module import.
+
+### Fix 4b — A2 `scoring_keywords`
+
+`models.py`: `ScoringKeywords` class + `DistilledToR.scoring_keywords` field.
+`SYSTEM_PROMPT_A2`: `### Scoring keywords` section — `role_implied` (inferred
+from position title; Sonnet-class reasoning), `scope_implied` (from project scope),
+`explicit` (stated requirements). 5–15 keywords per list.
+
+### Fix 4 — Python relevance scoring
+
+`pipeline/precompute_utils.py`: `keyword_overlap_score`, `geography_score`,
+`compute_composite_score` added. `pipeline/agents/cv_tor_mapper.py`:
+`_precompute_project_dates_for_mapper` (duration upstream); `_precompute_relevance_scores`
+real implementation (stub replaced); `SYSTEM_PROMPT_A3` gains `## Pre-computed scores`
+section. `pipeline/agents/fields_generator.py`: pre-compute call removed (now
+in A3's `run()`).
+
+### Fix 5b — Soft-flag manifest warnings
+
+`pipeline/manifest.py`: `append_warning` helper. `pipeline/validators.py`: three
+check functions (`check_fields_generator_warnings`, `check_content_reviewer_warnings`,
+`check_compressor_warnings`). `pipeline/orchestrator.py`: soft-flag loops wired
+after A4, A5, A6 in `run_phase3` and `_run_compressor_and_halt`.
+
+### New files (3)
+
+- `tests/test_tor_summarizer_prompt.py` — 4 tests
+- `tests/test_manifest_warnings.py` — 5 tests
+- `additions/PIPELINE_DIAGNOSTIC_ROUND_5.md` — full implementation record
+
+### Modified files (13)
+
+- `pipeline/config.py`, `pipeline/agents/cv_extractor.py`, `pipeline/agents/tor_summarizer.py`
+- `pipeline/agents/cv_tor_mapper.py`, `pipeline/agents/fields_generator.py`
+- `pipeline/manifest.py`, `pipeline/orchestrator.py`
+- `pipeline/precompute_utils.py`, `pipeline/validators.py`, `models.py`
+- `tests/test_cv_extractor_prompt.py`, `tests/test_models.py`
+- `tests/test_precompute_utils.py`, `tests/test_cv_tor_mapper.py`
+- `tests/test_validators.py`, `tests/test_fields_generator_precompute.py`
+
+### Documentation updated (7)
+
+- `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` — Issues C/D/U fixed; Fixes 2/4/4b/5b/U implemented; Round 5 completed; Round 6 added.
+- `additions/PIPELINE_DIAGNOSTIC_ROUND_5.md` — new per-round record.
+- `markdowns/RELEVANCE_SCORING_DESIGN.md` — status updated to IMPLEMENTED.
+- `markdowns/PROMPT_REVIEW_CONTEXT.md` — 5 new implementation rows + §7 extended.
+- `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` (this file) — Round 6 section.
+- `markdowns/PIPELINE_CONTEXT.md` — tor_summarizer and cv_tor_mapper rows updated.
+- `markdowns/RUNS_ARTIFACTS_CONTEXT.md` — tor_data.json and manifest.json rows updated.
+
+**Total Round 6**: 18 files touched, 393/393 tests passing (61 new/updated tests).
+
+---
+
+## Round 7 — Diagnostic Fixes Round 6 (May 2026)
+
+Implements Fix Z, Fix AA, Fix V, Fix W, Fix Y from `PIPELINE_DIAGNOSTIC_ROUND_6.md`.
+Fix S and Fix 4 threshold recalibration deferred to Round 8.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `pipeline/agents/compressor.py` | Fix Z: `A6_INPUT_PROJECT_WORD_CAP`, `_A6_CAPPED_FIELDS`, `_truncate_project_text_for_a6`; call site + `append_warning` loop in `run()`; `copy` and `append_warning` imports |
+| `pipeline/agents/fields_generator.py` | Fix AA: `SYSTEM_PROMPT_A4` minimum output guarantee extended with explicit `detailed_tasks` example and geographic exemption rule |
+| `pipeline/agents/cv_extractor.py` | Fix V: `### Merged-cell and two-column project tables` section in `SYSTEM_PROMPT_A1`; Fix W: `### Date ordering validation` section in `SYSTEM_PROMPT_A1` |
+| `pipeline/agents/tor_summarizer.py` | Fix Y: `### scoring_keywords` section moved to immediately after `### position_title`; non-empty guarantee added |
+| `pipeline/validators.py` | Fix Y: `check_tor_summarizer_warnings` function |
+| `pipeline/orchestrator.py` | Fix Y: `check_tor_summarizer_warnings` imported and wired in `run_phase1` after A2 |
+| `tests/test_compressor_text_cap.py` | **New file.** 12 tests for `_truncate_project_text_for_a6` |
+| `tests/test_fields_generator_prompt.py` | 2 new tests (`test_detailed_tasks_explicitly_mentioned`, `test_geographic_mismatch_does_not_exempt`) |
+| `tests/test_cv_extractor_prompt.py` | 6 new tests (`TestSystemPromptA1MergedCellExtraction`, `TestSystemPromptA1DateOrdering`) |
+| `tests/test_tor_summarizer_prompt.py` | 2 new tests (`test_scoring_keywords_section_position`, `test_scoring_keywords_non_empty_guarantee_present`) |
+| `tests/test_validators.py` | 6 new tests (`TestCheckTorSummarizerWarnings`) |
+| `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` | Status header, issue headings, fix table, sequence, round summary updated |
+| `additions/PIPELINE_DIAGNOSTIC_ROUND_6.md` | Status → Complete; planned → delivered; implementation record added |
+| `markdowns/PROMPT_REVIEW_CONTEXT.md` | 6 new rows + §7 quickref updated |
+| `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` | This section |
+| `markdowns/PIPELINE_CONTEXT.md` | A1 + Compressor rows updated |
+| `markdowns/RUNS_ARTIFACTS_CONTEXT.md` | `cv_data.json` + `tor_data.json` + `manifest.json` rows updated |
+
+**Total Round 7**: 17 files touched, 421/421 tests passing (28 new tests).

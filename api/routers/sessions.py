@@ -1069,7 +1069,9 @@ async def submit_field_edits(
     from pipeline.orchestrator import run_field_editor_task
 
     try:
-        applied, skipped = run_field_editor_task(session_id=session_id, edits=edits)
+        applied, skipped, kq_source = run_field_editor_task(
+            session_id=session_id, edits=edits
+        )
     except Exception as exc:
         set_failed(session_id, str(exc))
         raise HTTPException(
@@ -1083,6 +1085,7 @@ async def submit_field_edits(
         round=new_round,
         applied=applied,
         skipped=skipped,
+        kq_source=kq_source,
         message="Field edits applied. Awaiting checkpoint_3 approval before re-render.",
     )
 
