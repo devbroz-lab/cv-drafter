@@ -81,6 +81,22 @@ class SessionCreateResponse(BaseModel):
 # ── Session status ────────────────────────────────────────────────────────────
 
 
+class SessionSummary(BaseModel):
+    """Lightweight session row for GET /sessions list."""
+
+    session_id: str
+    status: SessionStatus
+    target_format: TargetFormat
+    round: int = 1
+    source_filename: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionSummary]
+
+
 class SessionStatusResponse(BaseModel):
     session_id: str
     user_id: str | None = None

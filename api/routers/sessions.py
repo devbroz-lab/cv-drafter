@@ -36,8 +36,10 @@ from api.models.requests import (
     ReviewResponse,
     SessionCreateRequest,
     SessionCreateResponse,
+    SessionListResponse,
     SessionStartResponse,
     SessionStatusResponse,
+    SessionSummary,
     SessionStatusUpdateRequest,
     SignedDownloadResponse,
     TorPoolSelectionRequest,
@@ -50,6 +52,7 @@ from api.services.database import (
     count_active_sessions,
     create_session_row,
     get_session_row,
+    list_sessions_for_user,
     increment_round,
     set_failed,
     set_processing,
@@ -71,6 +74,18 @@ _MAX_ACTIVE_SESSIONS = 3
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
+
+def _row_to_summary(row: dict[str, Any]) -> SessionSummary:
+    return SessionSummary(
+        session_id=row["id"],
+        status=row["status"],
+        target_format=row["target_format"],
+        round=row.get("round") or 1,
+        source_filename=row["source_filename"],
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+    )
 
 
 def _row_to_status(row: dict[str, Any]) -> SessionStatusResponse:
@@ -115,6 +130,26 @@ def _validate_cv_extension(filename: str | None) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported file type '{suffix}'. Only .docx and .pdf are accepted.",
         )
+
+
+# ── GET /sessions ─────────────────────────────────────────────────────────────
+
+
+@router.get("", response_model=SessionListResponse)
+async def list_sessions(
+    current_user: CurrentUser,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> SessionListResponse:
+    """List sessions for the authenticated user (newest first)."""
+    try:
+        rows = list_sessions_for_user(current_user.user_id, limit=limit, offset=offset)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+    return SessionListResponse(sessions=[_row_to_summary(row) for row in rows])
 
 
 # ── POST /sessions ────────────────────────────────────────────────────────────

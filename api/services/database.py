@@ -73,6 +73,29 @@ def create_session_row(
     return result.data[0]
 
 
+def list_sessions_for_user(
+    user_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return sessions owned by the user, newest activity first."""
+    safe_limit = max(1, min(limit, 100))
+    safe_offset = max(0, offset)
+    result = (
+        get_service_client()
+        .table("sessions")
+        .select(
+            "id, status, target_format, round, source_filename, created_at, updated_at"
+        )
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .range(safe_offset, safe_offset + safe_limit - 1)
+        .execute()
+    )
+    return list(result.data or [])
+
+
 def get_session_row(
     session_id: str,
     *,
