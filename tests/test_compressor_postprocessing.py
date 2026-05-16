@@ -170,3 +170,76 @@ class TestRestoreIntegration:
         assert words_after == count_compressible_words_total(
             {"key_qualifications": ["Short text"]}
         )
+
+
+# ---------------------------------------------------------------------------
+# Fix 9 — FieldShortened.subfield is optional (str | None, default None)
+# ---------------------------------------------------------------------------
+
+class TestFieldShortenedOptionalSubfield:
+    """
+    Agent 6 uses subfield=null for dot-path fields and subfield="[N]" for
+    list-indexed fields.  The schema must accept both conventions.
+    """
+
+    def test_no_subfield_arg_defaults_to_none(self):
+        fs = FieldShortened(field="relevant_projects[0].activities_performed")
+        assert fs.subfield is None
+
+    def test_explicit_none_accepted(self):
+        fs = FieldShortened(
+            field="relevant_projects[0].activities_performed", subfield=None
+        )
+        assert fs.subfield is None
+
+    def test_bracket_index_string_accepted(self):
+        fs = FieldShortened(field="key_qualifications", subfield="[0]")
+        assert fs.subfield == "[0]"
+
+    def test_empty_string_still_accepted(self):
+        """Empty string is a valid str | None value — backward compat."""
+        fs = FieldShortened(field="key_qualifications", subfield="")
+        assert fs.subfield == ""
+
+    def test_compression_result_with_mixed_fields_shortened(self):
+        """Round-trip through model_validate with a mix of null and string subfields."""
+        raw = {
+            "applied": True,
+            "words_before": 2336,
+            "words_after": 1798,
+            "target_words": 1800,
+            "fields_shortened": [
+                # dot-path entry — subfield null (A6's normal convention)
+                {
+                    "field": "relevant_projects[0].activities_performed",
+                    "subfield": None,
+                    "words_before": 200,
+                    "words_after": 120,
+                },
+                # list-indexed entry — subfield bracket string
+                {
+                    "field": "key_qualifications",
+                    "subfield": "[0]",
+                    "words_before": 30,
+                    "words_after": 20,
+                },
+                # dot-path entry — subfield absent entirely
+                {
+                    "field": "relevant_projects[1].activities_performed",
+                    "words_before": 150,
+                    "words_after": 90,
+                },
+            ],
+        }
+        cr = CompressionResult.model_validate(raw)
+        assert cr.applied is True
+        assert len(cr.fields_shortened) == 3
+        assert cr.fields_shortened[0].subfield is None
+        assert cr.fields_shortened[1].subfield == "[0]"
+        assert cr.fields_shortened[2].subfield is None
+
+    def test_model_dump_round_trip_preserves_none(self):
+        fs = FieldShortened(field="x")
+        dumped = fs.model_dump()
+        restored = FieldShortened.model_validate(dumped)
+        assert restored.subfield is None

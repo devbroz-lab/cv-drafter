@@ -111,6 +111,40 @@ def get_step_status(run_dir: Path, step_name: str) -> str:
     return "waiting"
 
 
+def append_warning(
+    run_dir: Path,
+    stage: str,
+    kind: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    """
+    Append a soft-flag quality warning to manifest.json.
+
+    Unlike ``update_step``, this is non-blocking — pipeline execution
+    continues regardless.  Warnings are surfaced via ``GET /sessions/{id}/manifest``.
+
+    Parameters
+    ----------
+    run_dir : Path   Session run directory.
+    stage   : str    Manifest step name where the warning was detected.
+    kind    : str    Short machine-readable label, e.g. ``"applied_false"``,
+                     ``"generation_warnings_high"``, ``"review_block_null"``.
+    message : str    Human-readable description.
+    details : dict | None   Optional structured payload.
+    """
+    with manifest_lock(run_dir):
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        warnings: list = manifest.setdefault("warnings", [])
+        warnings.append({
+            "stage": stage,
+            "kind": kind,
+            "message": message,
+            "details": details or {},
+        })
+        _write(run_dir, manifest)
+
+
 def _write(run_dir: Path, manifest: dict) -> None:
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False),

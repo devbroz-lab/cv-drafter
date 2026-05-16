@@ -43,15 +43,16 @@ Important current fact:
 
 `POST /sessions/{id}/field-edit` currently:
 
-- Requires session status `completed` OR `checkpoint_3_pending`
+- Requires session status `completed`
 - Accepts 1 to 5 edits
-- Increments round
+- Increments round (`increment_round`)
+- Sets status to `processing`
 - Runs field editor synchronously (returns `applied` / `skipped` in response)
 - Sets manifest:
   - `checkpoint_3` -> `pending`
   - `renderer` -> `waiting`
 - Moves DB status to `checkpoint_3_pending`
-- No polling needed (synchronous return)
+- Requires `POST /approve/checkpoint_3` to re-render updated DOCX
 
 So the edit loop is:
 
@@ -61,17 +62,27 @@ So the edit loop is:
 
 ## 4) Current frontend behavior
 
-`SessionWorkspacePage.tsx` and `DocxViewer.tsx`:
+`SessionWorkspacePage.tsx` and `DocxViewer.tsx` still implement an older flow:
 
-- Field editor UI shown when status is `completed`
-- Shows "Edit Document" button at completed block
-- Opens field_edit panel with DocxViewer on output.docx
-- Submits `POST /field-edit` from completed state
-- Handles skipped edits with UI card
+- Field editor UI is shown only when status is `field_editor_pending`
+- It opens `preview.docx` via `GET /sessions/{id}/files/preview`
+- Submits `POST /field-edit` from that view
 
-Backend accepts both:
-- `completed` (original trigger)
-- `checkpoint_3_pending` (for "Cancel & re-edit" flow)
+But backend now expects:
+
+- `POST /field-edit` only when status is `completed`
+- Workflow oriented around editing final output and re-render approval cycle
+
+### Current FE/BE drift
+
+This is a real integration mismatch:
+
+- FE trigger condition: `field_editor_pending`
+- BE accepted condition: `completed`
+
+Result:
+- With current backend, frontend field-edit panel is not reachable in normal successful runs.
+- If manually invoked before completion, backend returns conflict.
 
 ---
 
@@ -118,11 +129,11 @@ Frontend still exposes "Request a revision" via `/comments`, which does not refl
 
 ## 7) Effective "current truth" summary
 
-1. Backend canonical revision path: post-completion `POST /field-edit`.
-2. Backend accepts both `completed` and `checkpoint_3_pending` states.
-3. Frontend shows "Edit Document" button at completed status.
-4. Referencing mode works independently on completed output.
-5. Field-path mapping: GIZ solid, WB composite cells (employment 3-cell, projects 2-cell) now corrected.
+1. Backend canonical revision path is now post-completion `POST /field-edit`.
+2. Backend no longer uses `field_editor_pending` as the normal edit gate.
+3. Frontend still uses the legacy `field_editor_pending` + `preview.docx` flow.
+4. Referencing (`reference` mode with locator JSON export) works independently on completed output.
+5. Field-path mapping quality is acceptable for many GIZ cells but problematic for WB composite cells.
 
 ---
 
@@ -133,9 +144,9 @@ Frontend still exposes "Request a revision" via `/comments`, which does not refl
   - `cv-drafter/api/routers/sessions.py`
   - `cv-drafter/api/models/requests.py`
   - `cv-drafter/pipeline/agents/field_editor.py`
-  - `cv-drafter/pipeline/agents/content_reviewer.py` (solvability tagging)
-  - `cv-drafter/pipeline/config.py` (new constants)
-  - `cv-drafter/pipeline/validation.py` (new helpers)
+  - `cv-drafter/templates/giz_dynamic_template.py`
+  - `cv-drafter/templates/wb_dynamic_template.py`
+  - `cv-drafter/templates/wb.py`
 
 - Frontend
   - `cv-drafter-ui/src/pages/SessionWorkspacePage.tsx`
@@ -143,5 +154,4 @@ Frontend still exposes "Request a revision" via `/comments`, which does not refl
   - `cv-drafter-ui/src/lib/utils/locatorToDotPath.ts`
   - `cv-drafter-ui/src/lib/api.ts`
   - `cv-drafter-ui/src/lib/types.ts`
-  - `cv-drafter-ui/src/components/FieldSelectorTooltip.tsx` (new)
 

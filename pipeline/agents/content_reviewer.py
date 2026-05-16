@@ -39,6 +39,7 @@ from pipeline.config import (
 from pipeline.manifest import update_step
 from pipeline.text_encoding import UTF_8
 from pipeline.utils import (
+    extract_json_object,
     load_json_file,
     load_tor_envelope,
     parse_json_string,
@@ -60,9 +61,12 @@ list of generation warnings from the previous agent. Your job is to review
 every populated field in the CVData, fix low-severity issues automatically,
 and flag high-severity issues for human resolution.
 
-## Output rules
-- Respond with a single JSON object and nothing else.
-- No preamble, no explanation, no markdown fences.
+## Output contract (READ FIRST)
+- Your entire response must be a single JSON object — nothing else.
+- The FIRST non-whitespace character MUST be `{`. The LAST MUST be `}`.
+- No preamble. No reasoning text. No "Here is the JSON". No explanation.
+- No markdown fences (no ```json, no ```).
+- Do all reasoning silently. Only the JSON object is emitted.
 - The output must have this exact shape:
 
 {
@@ -633,7 +637,7 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
         update_step(run_dir, "content_reviewer", "failed")
         raise ValueError("Content Reviewer response truncated (max_tokens reached).")
 
-    raw_text = response.content[0].text.strip()
+    raw_text = extract_json_object(response.content[0].text.strip())
 
     try:
         parsed = parse_json_string(raw_text, context="content_reviewer.llm_response")

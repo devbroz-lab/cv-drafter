@@ -559,6 +559,7 @@ approval before the renderer produces a new `output.docx`.
       "reason": "Instruction requires adding a certification not present in the original value."
     }
   ],
+  "kq_source": "ai_generated",
   "message": "Field edits applied. Awaiting checkpoint_3 approval before re-render."
 }
 ```
@@ -570,6 +571,11 @@ approval before the renderer produces a new `output.docx`.
   Reason categories: path resolution failure, non-scalar target, LLM skip decision, API error,
   write-back failure. The pipeline proceeds regardless.
 - `round`: The new round number after incrementing
+- `kq_source`: Which data source provided the key qualification bullets that edits targeted,
+  computed from the **post-edit** state of `generated_fields.json`.
+  - `"ai_generated"` — Agent 4's ToR-tailored content is active; edits targeted `generated_fields[j].content` paths.
+  - `"extracted"` — Agent 4 produced no usable content; edits targeted Agent 1's raw `key_qualifications[i]` list. **Frontend should display a contextual warning** so the user knows they are editing raw extraction, not AI-generated content.
+  - `"absent"` — Neither source has any bullets; the key qualifications section is empty.
 
 **Behaviour**:
 - Increments the session `round` counter immediately

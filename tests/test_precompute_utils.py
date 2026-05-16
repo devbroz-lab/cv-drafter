@@ -7,15 +7,23 @@ Covers:
   - compute_project_duration
   - compute_project_year
   - restore_protected_fields
+  - keyword_overlap_score (Fix 4, Round 5)
+  - geography_score (Fix 4, Round 5)
+  - compute_composite_score (Fix 4, Round 5)
 """
+
+import datetime
 
 import pytest
 from pipeline.precompute_utils import (
+    compute_composite_score,
     compute_project_duration,
     compute_project_year,
     count_compressible_words_total,
     count_words,
     count_words_per_field,
+    geography_score,
+    keyword_overlap_score,
     restore_protected_fields,
 )
 
@@ -140,9 +148,12 @@ class TestComputeProjectDuration:
         assert result == "2 years"
 
     def test_present_in_date_to(self):
+        today = datetime.date.today()
+        total_months = (today.year - 2020) * 12 + (today.month - 1)
+        years_rounded = max(1, int(total_months / 12 + 0.5))
+        expected = f"{years_rounded} year{'s' if years_rounded != 1 else ''}"
         result = compute_project_duration("January 2020", "Present")
-        # 2026-01 minus 2020-01 = 72 months = 6 years
-        assert result == "6 years"
+        assert result == expected
 
     def test_missing_date_from(self):
         assert compute_project_duration("", "June 2020") == ""
@@ -174,8 +185,9 @@ class TestComputeProjectYear:
         assert result == "2015\u20132019"  # en-dash
 
     def test_present_in_date_to(self):
+        today = datetime.date.today()
         result = compute_project_year("January 2020", "Present")
-        assert result == f"2020\u2013{2026}"
+        assert result == f"2020\u2013{today.year}"
 
     def test_only_date_from(self):
         assert compute_project_year("2018", "") == "2018"
@@ -240,3 +252,130 @@ class TestRestoreProtectedFields:
         restored, paths = restore_protected_fields(original, modified, PROTECTED)
         assert paths == []
         assert restored["other_skills"] == ["new"]  # non-protected, not restored
+
+
+# ---------------------------------------------------------------------------
+# keyword_overlap_score — Fix 4 (Round 5)
+# ---------------------------------------------------------------------------
+
+class TestKeywordOverlapScore:
+    def _proj(self, features="", activities="", positions="", name="") -> dict:
+        return {
+            "main_project_features": features,
+            "activities_performed": activities,
+            "positions_held": positions,
+            "project_name": name,
+        }
+
+    def test_empty_keywords_returns_zero(self):
+        proj = self._proj(features="grid code tariff renewable energy")
+        score, matches = keyword_overlap_score(proj, [])
+        assert score == 0.0
+        assert matches == []
+
+    def test_all_keywords_match_returns_one(self):
+        proj = self._proj(features="grid code tariff design renewable energy")
+        keywords = ["grid code", "tariff design", "renewable energy"]
+        score, matches = keyword_overlap_score(proj, keywords)
+        assert score == 1.0
+        assert set(matches) == set(keywords)
+
+    def test_partial_match(self):
+        proj = self._proj(features="grid code and distribution planning")
+        keywords = ["grid code", "tariff design", "distribution planning"]
+        score, matches = keyword_overlap_score(proj, keywords)
+        assert score == pytest.approx(2 / 3, abs=0.01)
+        assert "grid code" in matches
+        assert "distribution planning" in matches
+        assert "tariff design" not in matches
+
+    def test_case_insensitive(self):
+        proj = self._proj(features="Grid Code Tariff Design")
+        keywords = ["grid code", "tariff design"]
+        score, _ = keyword_overlap_score(proj, keywords)
+        assert score == 1.0
+
+    def test_score_capped_at_one(self):
+        proj = self._proj(features="a b c d e f g h i j k l")
+        keywords = ["a", "b", "c"]
+        score, matches = keyword_overlap_score(proj, keywords)
+        assert score == 1.0
+
+    def test_all_fields_searched(self):
+        proj = {
+            "main_project_features": "grid code",
+            "activities_performed": "tariff design",
+            "positions_held": "team leader",
+            "project_name": "Energy Project",
+        }
+        keywords = ["grid code", "tariff design", "team leader", "energy project"]
+        score, matches = keyword_overlap_score(proj, keywords)
+        assert score == 1.0
+
+
+# ---------------------------------------------------------------------------
+# geography_score — Fix 4 (Round 5)
+# ---------------------------------------------------------------------------
+
+class TestGeographyScore:
+    def _proj(self, location="", country="") -> dict:
+        return {"location": location, "country": country}
+
+    def test_empty_required_returns_zero(self):
+        proj = self._proj(location="Nairobi, Kenya")
+        score, matches = geography_score(proj, [])
+        assert score == 0.0
+        assert matches == []
+
+    def test_exact_country_match(self):
+        proj = self._proj(country="Kenya")
+        score, matches = geography_score(proj, ["Kenya"])
+        assert score == 1.0
+        assert "Kenya" in matches
+
+    def test_case_insensitive_match(self):
+        proj = self._proj(location="Nairobi, KENYA")
+        score, matches = geography_score(proj, ["kenya"])
+        assert score == 1.0
+
+    def test_partial_regional_match(self):
+        proj = self._proj(location="Addis Ababa, Ethiopia")
+        # "Africa" appears as a word in neither but "Ethiopia" is >4 chars
+        score, matches = geography_score(proj, ["Ethiopia"])
+        assert score == 1.0
+
+    def test_regional_partial_overlap(self):
+        proj = self._proj(location="West Africa")
+        score, matches = geography_score(proj, ["Sub-Saharan Africa"])
+        # "Africa" is a >4 char word present in both
+        assert score >= 0.5
+
+    def test_no_match_returns_zero(self):
+        proj = self._proj(location="Oslo, Norway", country="Norway")
+        score, matches = geography_score(proj, ["South Africa", "Kenya"])
+        assert score == 0.0
+        assert matches == []
+
+
+# ---------------------------------------------------------------------------
+# compute_composite_score — Fix 4 (Round 5)
+# ---------------------------------------------------------------------------
+
+class TestComputeCompositeScore:
+    def test_both_zero(self):
+        assert compute_composite_score(0.0, 0.0) == 0.0
+
+    def test_full_keyword_no_geo(self):
+        # 1.0 * 0.35 + 0.0 * 0.15 = 0.35
+        assert compute_composite_score(1.0, 0.0) == pytest.approx(0.35)
+
+    def test_no_keyword_full_geo(self):
+        # 0.0 * 0.35 + 1.0 * 0.15 = 0.15
+        assert compute_composite_score(0.0, 1.0) == pytest.approx(0.15)
+
+    def test_both_full(self):
+        # 1.0 * 0.35 + 1.0 * 0.15 = 0.50
+        assert compute_composite_score(1.0, 1.0) == pytest.approx(0.50)
+
+    def test_custom_weights(self):
+        assert compute_composite_score(0.5, 0.5, keyword_weight=0.4, geography_weight=0.2) == pytest.approx(0.30)

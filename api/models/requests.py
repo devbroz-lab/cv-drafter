@@ -280,6 +280,17 @@ class FieldEditResponse(BaseModel):
     applied: list[str]
     skipped: list[FieldEditSkip]  # was list[str] — see BREAKING CHANGE note in API.md
     message: str
+    kq_source: Literal["ai_generated", "extracted", "absent"] = Field(
+        description=(
+            "Which data source provided the key_qualifications bullets that "
+            "field-edits targeted, computed from the post-edit state of "
+            "generated_fields.json. "
+            "'ai_generated' = Agent 4's ToR-tailored content (generated_fields[j].content paths); "
+            "'extracted' = Agent 1's raw CV extraction — Agent 4 produced no usable content "
+            "(key_qualifications[i] paths); "
+            "'absent' = no bullets in either source."
+        ),
+    )
 
 
 # ── Pipeline output data ──────────────────────────────────────────────────────

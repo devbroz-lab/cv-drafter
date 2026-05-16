@@ -53,37 +53,11 @@ from pipeline.paths import (
 from templates.giz_dynamic_template import build_dynamic_template
 
 # ---------------------------------------------------------------------------
-# CEFR mapping — kept local so the renderer has zero dependency on the
-# pipeline schema at render time (renderers should be self-contained).
+# CEFR mapping — sourced from the shared pipeline.utils.cefr module so that
+# the renderer and the field editor always use the same mapping table.
 # ---------------------------------------------------------------------------
 
-_CEFR_MAP: dict[str, str] = {
-    "mother tongue": "Native",
-    "native": "Native",
-    "fluent": "C2",
-    "excellent": "C2",
-    "very good": "C1/C2",
-    "good": "C1",
-    "fair": "B1/B2",
-    "intermediate": "B1/B2",
-    "working": "B1",
-    "basic": "A2",
-    "beginner": "A1",
-    "poor": "A1/A2",
-    "a1": "A1",
-    "a2": "A2",
-    "b1": "B1",
-    "b2": "B2",
-    "c1": "C1",
-    "c2": "C2",
-    "c1/c2": "C1/C2",
-    "b1/b2": "B1/B2",
-    "a1/a2": "A1/A2",
-}
-
-
-def _map_cefr(level: str) -> str:
-    return _CEFR_MAP.get(level.lower().strip(), level)
+from pipeline.utils.cefr import map_cefr as _map_cefr
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +192,12 @@ def _build_context(cv: dict) -> dict:
         "languages": languages,
         "key_qualifications": key_qualifications,
         "publications": publications,
+        # Optional sections — rendered when non-empty (requires template placeholders)
+        "references": [
+            r for r in cv.get("references", [])
+            if r.get("name", "").strip()
+        ],
+        "certification_declaration": cv.get("certification_declaration", "").strip(),
         "countries_of_experience": countries_of_experience,
         "relevant_projects": relevant_projects,
     }

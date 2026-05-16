@@ -11,8 +11,19 @@ from __future__ import annotations
 # Anthropic model defaults
 # ---------------------------------------------------------------------------
 
-# Model used by content_reviewer (and any agent that does not override it).
-ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"
+# Default model for all pipeline agents (A1, A2, A3, A5, A6).
+# All non-field-editor agents import their model constant from this module —
+# change the value here to update all of them simultaneously.
+# Round 6: upgraded from deprecated claude-sonnet-4-20250514 to claude-sonnet-4-6.
+# claude-sonnet-4-6 provides a 1M token context window (vs 200k), resolving A1
+# context exhaustion on large CVs with long prompts. Same pricing tier; faster.
+ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
+
+# Model for Agent 4 (Fields Generator) — the sole generative synthesis agent.
+# A4 must reason across four dense input blocks simultaneously to produce
+# ToR-grounded qualification bullets; this is a Sonnet-class task.
+# Round 6: also upgraded to claude-sonnet-4-6 for the 1M context window.
+ANTHROPIC_SYNTHESIS_MODEL: str = "claude-sonnet-4-6"
 
 # Hard token cap for content_reviewer LLM call.  The reviewer outputs the full
 # CVData + review block, so this needs to be generous.

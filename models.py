@@ -15,6 +15,8 @@ Design rules:
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -288,6 +290,35 @@ class CVData(BaseModel):
             "institution references. Surfaced to downstream agents and human reviewers."
         ),
     )
+    language_scale_direction: Literal["1_best", "1_worst"] | None = Field(
+        default=None,
+        description=(
+            "Direction of a numeric language proficiency scale extracted from the "
+            "CV's language table header. '1_best' = '1 = excellent' convention "
+            "(default — maps 1→C2, 2→C1, 3→B2, 4→B1, 5→A2). '1_worst' = "
+            "'1 = basic' convention (maps 1→A1, 2→A2, 3→B1, 4→B2, 5→C1). "
+            "None = no explicit indicator found; '1_best' default mapping applies. "
+            "Set by Agent 1 when scale-direction header text is detected."
+        ),
+    )
+    references: list[Reference] = Field(
+        default_factory=list,
+        description=(
+            "Named contact references extracted from the CV's References section. "
+            "Each entry is a structured Reference with optional name, title, "
+            "organisation, email, and phone fields. Empty list when no References "
+            "section is present. Renderer outputs a References section when non-empty."
+        ),
+    )
+    certification_declaration: str = Field(
+        default="",
+        description=(
+            "Free-text certification or declaration block extracted verbatim from "
+            "the CV (e.g. 'I, the undersigned, certify that to the best of my "
+            "knowledge and belief...'). Empty string when no such block is present. "
+            "Renderer outputs this verbatim when non-empty."
+        ),
+    )
 
     # --- Agent-generated fields (populated by Fields Generator agent) ---
     generated_fields: list[GeneratedField] = Field(
@@ -433,6 +464,38 @@ class Competency(BaseModel):
     )
 
 
+class ScoringKeywords(BaseModel):
+    """
+    Keyword sets extracted/inferred by Agent 2 (ToR Summarizer) from the ToR
+    document.  Consumed by Agent 3's Python relevance scorer (Fix 4).
+
+    Three lists capture different sources of keyword signal:
+    - role_implied  : terms a qualified expert in this role would routinely work
+                      with, inferred from the position title and pool name.
+                      Requires Sonnet-quality reasoning (light generative step).
+    - scope_implied : thematic areas and intervention types described in the
+                      project scope / background section.
+    - explicit      : directly stated requirements — geography, years of
+                      experience, sector labels, donor-specific terminology.
+
+    Written to ``tor_data.json`` for audit and transparency — reviewers can see
+    exactly which keywords drove project scoring for any given run.
+    """
+
+    role_implied: list[str] = Field(
+        default_factory=list,
+        description="Keywords inferred from position title / pool name.",
+    )
+    scope_implied: list[str] = Field(
+        default_factory=list,
+        description="Keywords from the project scope or background section.",
+    )
+    explicit: list[str] = Field(
+        default_factory=list,
+        description="Directly stated requirements: geography, years, sector.",
+    )
+
+
 class DistilledToR(BaseModel):
     """
     Structured summary of a Terms of Reference document produced by Agent 2
@@ -482,6 +545,14 @@ class DistilledToR(BaseModel):
             "preferred_competencies but in structured form."
         ),
     )
+    scoring_keywords: ScoringKeywords = Field(
+        default_factory=ScoringKeywords,
+        description=(
+            "Keyword sets for Fix 4 Python relevance scoring. Populated by A2 "
+            "from position title, scope, and explicit ToR statements. Empty lists "
+            "when the source text is absent. Visible in tor_data.json for audit."
+        ),
+    )
 
 
 class FormatProfile(BaseModel):
@@ -508,11 +579,36 @@ class FormatProfile(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class Reference(BaseModel):
+    """
+    A named contact reference extracted from the CV's References section.
+
+    All fields are optional strings — populate only what the source CV provides.
+    Renderer outputs this as a References section when the list is non-empty.
+    """
+
+    name: str = Field(default="", description="Full name of the reference contact")
+    title: str = Field(default="", description="Job title or role")
+    organisation: str = Field(default="", description="Organisation or institution")
+    email: str = Field(default="", description="Contact email address")
+    phone: str = Field(default="", description="Contact phone number")
+
+
 class FieldShortened(BaseModel):
     """Record of a single field that was shortened by the compressor."""
 
     field: str = Field(description="Top-level CVData field name (e.g. 'relevant_projects')")
-    subfield: str = Field(default="", description="Sub-field or index within the parent (e.g. '[0].activities_performed')")
+    subfield: str | None = Field(
+        default=None,
+        description=(
+            "Sub-field or index within the parent field. "
+            "For list-indexed fields (e.g. key_qualifications) this holds the bracket "
+            "index string such as '[0]'. For dot-path fields "
+            "(e.g. 'relevant_projects[0].activities_performed') the full path is in "
+            "'field' and subfield is None. "
+            "None and empty-string are both treated as 'no subfield'."
+        ),
+    )
     words_before: int = Field(default=0)
     words_after: int = Field(default=0)
 

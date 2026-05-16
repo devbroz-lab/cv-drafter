@@ -1,7 +1,13 @@
 """
-Tests for the Agent 4 date pre-compute step.
+Tests for the project date pre-compute helper in fields_generator.py.
 
-Verifies that _precompute_project_dates:
+Note (Round 5 — Fix 4): The CALL SITE for this pre-compute moved upstream
+to cv_tor_mapper.run() so that A3's LLM can see duration as a scoring signal.
+The _precompute_project_dates helper remains in fields_generator.py for
+backward compatibility and is no longer called from fields_generator.run().
+The equivalent helper in cv_tor_mapper.py is _precompute_project_dates_for_mapper.
+
+Verifies that _precompute_project_dates (the legacy helper):
   - fills empty duration and year fields using Python helpers
   - never overwrites non-empty existing values
   - handles missing/partial dates gracefully

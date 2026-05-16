@@ -3,12 +3,14 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env into os.environ BEFORE any module that reads environment variables
-# (e.g. Anthropic SDK reads ANTHROPIC_API_KEY from os.environ at client init).
-load_dotenv()
+# Load cv-drafter/.env into os.environ BEFORE any module that reads environment
+# variables (e.g. Anthropic SDK reads ANTHROPIC_API_KEY from os.environ at init).
+_pkg_root = Path(__file__).resolve().parent.parent
+load_dotenv(_pkg_root / ".env")
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402

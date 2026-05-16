@@ -34,6 +34,25 @@ def strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def extract_json_object(text: str) -> str:
+    """
+    Return the substring from the first '{' to the last '}' inclusive.
+
+    Defensive parser for LLM responses that occasionally leak prose before or
+    after the JSON object despite a JSON-only system prompt.  When the model
+    complies, this is a no-op.
+
+    If no '{...}' span is found the input is returned unchanged so the caller's
+    json.loads / model_validate_json raises the same diagnostic as before.
+    Always call AFTER strip_code_fences.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return text
+    return text[start : end + 1]
+
+
 def _snippet(s: str, max_len: int = 240) -> str:
     """Single-line repr preview for logs and error messages."""
     folded = " ".join(s.split())

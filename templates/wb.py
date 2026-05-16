@@ -88,10 +88,13 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
+    # Fix 5: include ALL detailed_tasks entries (including empty ones) so that
+    # the renderer's index aligns with the frontend's unfiltered list.
+    # Empty entries render as empty cells, which is correct behaviour.
     detailed_tasks = [
         gf.get("content", "").strip()
         for gf in cv.get("generated_fields", [])
-        if gf.get("field_key") == "detailed_tasks" and gf.get("content", "").strip()
+        if gf.get("field_key") == "detailed_tasks"
     ]
 
     relevant_projects = []
@@ -120,9 +123,24 @@ def _build_context(cv: dict) -> dict:
 
     publications = [p.strip() for p in cv.get("publications", []) if p.strip()]
 
+    # Fix 6: computed display strings missing from previous _build_context.
+    # These mirror the pattern already used by giz.py.
+    countries_display = ", ".join(
+        ce.get("country", "").strip()
+        for ce in cv.get("countries_of_experience", [])
+        if ce.get("country", "").strip()
+    )
+    other_skills_display = "; ".join(
+        s.strip() for s in cv.get("other_skills", []) if s.strip()
+    )
+
     return {
         "proposed_position": cv.get("proposed_position", "").strip(),
         "world_bank_affiliation": cv.get("world_bank_affiliation", "").strip(),
+        "employer": cv.get("employer", "").strip(),
+        "membership_professional_bodies": cv.get("membership_professional_bodies", "").strip(),
+        "countries_display": countries_display,
+        "other_skills_display": other_skills_display,
         "personal_info": {
             "full_name": pi.get("full_name", "").strip(),
             "date_of_birth": pi.get("date_of_birth", "").strip(),
@@ -135,6 +153,12 @@ def _build_context(cv: dict) -> dict:
         "employment_record": employment_record,
         "relevant_projects": relevant_projects,
         "publications": publications,
+        # Optional sections — rendered when non-empty (requires template placeholders)
+        "references": [
+            r for r in cv.get("references", [])
+            if r.get("name", "").strip()
+        ],
+        "certification_declaration": cv.get("certification_declaration", "").strip(),
     }
 
 

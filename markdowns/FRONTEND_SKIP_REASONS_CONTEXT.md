@@ -107,15 +107,28 @@ interface FieldEditSkip {
   reason: string;             // max 200 chars; may end with "…" if truncated
 }
 
+type KqSource = "ai_generated" | "extracted" | "absent";
+
 interface FieldEditResponse {
   session_id: string;
   status: string;
   round: number;
   applied: string[];
-  skipped: FieldEditSkip[];   // <-- new
+  skipped: FieldEditSkip[];   // <-- updated (was string[])
   message: string;
+  kq_source: KqSource;        // <-- new (Round 2)
 }
 ```
+
+### `kq_source` usage guidance
+
+`kq_source` indicates which data source provided the key qualification bullets at the time edits were submitted. It reflects the **post-edit** state.
+
+| Value | Meaning | Recommended UI action |
+|-------|---------|----------------------|
+| `"ai_generated"` | Agent 4's ToR-tailored bullets are active. Edits targeted `generated_fields[j].content` paths. | Normal flow — no warning needed. |
+| `"extracted"` | Agent 4 produced no usable content. Edits targeted Agent 1's raw `key_qualifications[i]` list. | **Display a contextual warning banner** so the user knows they are editing raw CV extraction, not AI-generated content. E.g. _"Note: AI content generation failed. You are editing the raw extracted text."_ |
+| `"absent"` | Neither source has any bullets. | The key qualifications section is empty; KQ edits are unlikely to have any effect. |
 
 ---
 

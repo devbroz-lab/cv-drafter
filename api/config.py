@@ -1,11 +1,19 @@
 """Application settings loaded from environment (see `.env.example`)."""
 
+from pathlib import Path
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Always load the cv-drafter/.env next to this package, not cwd-relative ".env"
+# (uvicorn is often started from a parent folder, which broke GOOGLE_CLIENT_ID).
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PACKAGE_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -30,6 +38,13 @@ class Settings(BaseSettings):
     # Default "*" for local dev — lock this down before going to production.
     # Example: "https://app.example.com,https://staging.example.com"
     cors_origins: str = "*"
+
+    @field_validator("google_client_id", "microsoft_client_id", mode="before")
+    @classmethod
+    def _strip_oauth_client_ids(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
     @property
     def cors_origins_list(self) -> list[str]:

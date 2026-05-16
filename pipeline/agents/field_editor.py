@@ -41,13 +41,15 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
+from pipeline.utils.cefr import map_cefr as _map_cefr
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model — Dev 2's choice: Sonnet for editing quality
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-6"
 # MODEL = "claude-haiku-4-5-20251001"
 
 # ---------------------------------------------------------------------------
@@ -166,11 +168,14 @@ def _normalized_scalar_equals(a: object, b: object) -> bool:
 
 
 def _key_qualification_bullets(generated: dict) -> list[str]:
-    raw = generated.get("key_qualifications")
-    if isinstance(raw, list) and raw:
-        out = [str(x).strip() for x in raw if str(x).strip()]
-        if out:
-            return out
+    """
+    Return the KQ bullet list that the GIZ renderer will display.
+
+    Priority mirrors the renderer (_build_context in templates/giz.py):
+      1. generated_fields entries with field_key == "key_qualifications" and
+         non-empty content  (LLM-generated content).
+      2. generated["key_qualifications"] raw list as fallback.
+    """
     gf = generated.get("generated_fields")
     if isinstance(gf, list):
         out = [
@@ -182,7 +187,98 @@ def _key_qualification_bullets(generated: dict) -> list[str]:
         ]
         if out:
             return out
+    raw = generated.get("key_qualifications")
+    if isinstance(raw, list) and raw:
+        out = [str(x).strip() for x in raw if str(x).strip()]
+        if out:
+            return out
     return []
+
+
+def _key_qualification_source(generated: dict) -> str:
+    """
+    Return which data source provides the active KQ bullets.
+
+    Returns "generated_fields" when the renderer would use generated_fields
+    content, "raw" when it falls back to key_qualifications, or "none" when
+    both are empty.
+    """
+    gf = generated.get("generated_fields")
+    if isinstance(gf, list):
+        has_gf = any(
+            isinstance(e, dict)
+            and e.get("field_key") == "key_qualifications"
+            and str(e.get("content", "")).strip()
+            for e in gf
+        )
+        if has_gf:
+            return "generated_fields"
+    raw = generated.get("key_qualifications")
+    if isinstance(raw, list) and any(str(x).strip() for x in raw):
+        return "raw"
+    return "none"
+
+
+# ---------------------------------------------------------------------------
+# Public API-facing translation for _key_qualification_source
+# ---------------------------------------------------------------------------
+
+_KQ_SOURCE_API_LABEL: dict[str, str] = {
+    "generated_fields": "ai_generated",
+    "raw":              "extracted",
+    "none":             "absent",
+}
+
+
+def kq_source_label(generated: dict) -> str:
+    """
+    Return the API-facing label for the active KQ source.
+
+    Maps the internal ``_key_qualification_source`` return values to
+    user-friendly labels suitable for inclusion in the POST /field-edit
+    response body:
+
+    ``"ai_generated"``
+        Agent 4 produced ToR-tailored key_qualification bullets.
+        Field edits target ``generated_fields[j].content`` paths.
+
+    ``"extracted"``
+        Agent 4 produced no usable content.  The renderer fell back to
+        Agent 1's raw ``key_qualifications`` list.  Edits target
+        ``key_qualifications[i]`` paths.  The frontend should surface a
+        contextual warning so the user knows they are editing the raw
+        extraction, not AI-generated content.
+
+    ``"absent"``
+        Neither source has any bullets.  The key qualifications section
+        is empty.  Field edits to KQ are unlikely to have any effect.
+    """
+    return _KQ_SOURCE_API_LABEL[_key_qualification_source(generated)]
+
+
+def _key_qualification_path_for_index(generated: dict, bullet_index: int) -> str:
+    """
+    Return the canonical dot-path for the KQ bullet at *bullet_index*.
+
+    When the active source is generated_fields, returns
+    ``generated_fields[j].content`` for the j-th non-empty KQ entry.
+    When the active source is the raw list, returns
+    ``key_qualifications[bullet_index]``.
+    """
+    source = _key_qualification_source(generated)
+    if source == "generated_fields":
+        gf = generated.get("generated_fields", [])
+        kq_entries = [
+            (j, e)
+            for j, e in enumerate(gf)
+            if isinstance(e, dict)
+            and e.get("field_key") == "key_qualifications"
+            and str(e.get("content", "")).strip()
+        ]
+        if bullet_index < len(kq_entries):
+            j = kq_entries[bullet_index][0]
+            return f"generated_fields[{j}].content"
+    return f"key_qualifications[{bullet_index}]"
 
 
 _KQ_TEXT_MATCH_MIN_SCORE = 40
@@ -264,7 +360,7 @@ def resolve_paragraph_placeholder_path(
     if bullets:
         idx = _match_key_qualification_index(a, bullets)
         if idx is not None:
-            return f"key_qualifications[{idx}]"
+            return _key_qualification_path_for_index(generated, idx)
 
     ori = generated.get("other_relevant_info")
     if isinstance(ori, str) and ori.strip() and _anchor_matches_other_relevant_info(a, ori):
@@ -572,12 +668,38 @@ def run_field_editor(
 
         log.debug("  current value: %s", str(current_value)[:120])
 
+        # Fix 3: GIZ CEFR enrichment — when the stored *_cefr field is empty
+        # the renderer derives the displayed value from the sibling *_raw field
+        # via _resolve_cefr.  Pass that rendered display value to Claude so the
+        # agent edits from what the user actually saw in the document, not from
+        # an empty string.
+        prompt_current_value = current_value
+        if donor == "giz" and not str(current_value).strip():
+            _cefr_m = re.match(
+                r"^languages\[(\d+)\]\.(reading|speaking|writing)_cefr$", field_path
+            )
+            if _cefr_m:
+                _lang_idx = int(_cefr_m.group(1))
+                _raw_key = f"{_cefr_m.group(2)}_raw"
+                try:
+                    _raw_val = mutated.get("languages", [])[_lang_idx].get(_raw_key, "")
+                    _mapped = _map_cefr(str(_raw_val))
+                    if _mapped:
+                        prompt_current_value = _mapped
+                        log.debug(
+                            "  CEFR enrichment: %s is empty; using mapped raw value '%s'",
+                            field_path,
+                            _mapped,
+                        )
+                except (IndexError, AttributeError, TypeError):
+                    pass  # enrichment is advisory — any failure is silent
+
         # --- Call Claude ---
         try:
             result = call_claude(
                 client,
                 field_path,
-                current_value,
+                prompt_current_value,
                 instruction,
                 donor=donor,
                 cv_context=cv_context,
@@ -636,7 +758,7 @@ def run(
 
     Reads generated_fields.json, applies edits via run_field_editor(),
     writes the mutated generated dict back (preserving all top-level keys),
-    and returns (applied, skipped).
+    and returns (applied, skipped, kq_source).
 
     field_editor has no manifest step — the caller is responsible for
     transitioning the DB session status (set_processing before calling,
@@ -660,6 +782,11 @@ def run(
     skipped : list[dict]
         Each item is {"path": str, "reason": str}.  Reason capped at
         _SKIP_REASON_MAX_LEN chars with trailing ellipsis if truncated.
+    kq_source : str
+        API-facing label for the active KQ source after edits are applied.
+        One of ``"ai_generated"``, ``"extracted"``, or ``"absent"``.
+        Computed from the post-edit state of mutated so that a successful
+        edit promoting the source is reflected accurately.
     """
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():
@@ -688,14 +815,19 @@ def run(
         cv_context=cv_context,
     )
 
+    # Compute kq_source from the post-edit state so that a successful edit
+    # that promotes the source (e.g. absent → ai_generated) is reflected.
+    kq_source = kq_source_label(mutated)
+
     # Write back — preserve all top-level keys, only replace "generated"
     gf["generated"] = mutated
     gf_path.write_text(json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
 
     log.info(
-        "field_editor complete — applied=%s skipped=%s run_dir=%s",
+        "field_editor complete — applied=%s skipped=%s kq_source=%s run_dir=%s",
         applied,
         skipped,
+        kq_source,
         run_dir,
     )
-    return applied, skipped
+    return applied, skipped, kq_source
