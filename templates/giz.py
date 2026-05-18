@@ -32,6 +32,7 @@ Template placeholders handled:
 
 from __future__ import annotations
 
+import html as _html
 import json
 from pathlib import Path
 
@@ -52,12 +53,32 @@ from pipeline.paths import (
 )
 from templates.giz_dynamic_template import build_dynamic_template
 
-# ---------------------------------------------------------------------------
-# CEFR mapping — sourced from the shared pipeline.utils.cefr module so that
-# the renderer and the field editor always use the same mapping table.
-# ---------------------------------------------------------------------------
-
+from pipeline.precompute_utils import _parse_date
 from pipeline.utils.cefr import map_cefr as _map_cefr
+
+
+def _xml_str(s: str) -> str:
+    """
+    Escape XML special characters so values are safe for insertion into docx
+    XML via docxtpl's string-based Jinja2 rendering.
+
+    Fix HH: docxtpl renders {{ variable }} by substituting the Python string
+    directly into the OOXML source. If a value contains a bare '&', the
+    resulting XML is invalid and the parser strips the character (confirmed in
+    production runs: "Legal & Policy" -> "Legal  Policy"). html.escape() maps
+    '&' -> '&amp;', '<' -> '&lt;', '>' -> '&gt;', ensuring all values are
+    valid XML text nodes.
+    """
+    return _html.escape(str(s), quote=False)
+
+
+def _edu_date_sort_key(edu: dict) -> tuple:
+    """Descending sort key for education entries: newest date_to first."""
+    to_parsed = _parse_date(edu.get("date_to", "") or edu.get("date_obtained", ""))
+    from_parsed = _parse_date(edu.get("date_from", ""))
+    to_key = to_parsed if to_parsed else (0, 0)
+    from_key = from_parsed if from_parsed else (0, 0)
+    return (to_key[0], to_key[1], from_key[0], from_key[1])
 
 
 # ---------------------------------------------------------------------------
@@ -69,29 +90,41 @@ from pipeline.utils.cefr import map_cefr as _map_cefr
 def _build_context(cv: dict) -> dict:
     pi = cv.get("personal_info", {})
 
-    # Nationality display
-    nat1 = pi.get("nationality", "").strip()
-    nat2 = pi.get("nationality_second", "").strip()
-    nationality_display = f"{nat1} / {nat2}" if (nat1 and nat2) else (nat1 or nat2)
-
     # Education rows
+    # Fix R7-5: sort education entries newest-first before building rows.
+    # GIZ CV convention is most-recent qualification at the top.
+    sorted_education = sorted(
+        cv.get("education", []),
+        key=_edu_date_sort_key,
+        reverse=True,
+    )
+
     education = []
-    for edu in cv.get("education", []):
+    for edu in sorted_education:
         date_from = edu.get("date_from", "").strip()
         date_to = edu.get("date_to", "").strip()
-        if date_from and date_to:
-            date_range = f"{date_from} \u2013 {date_to}"
-        elif date_obtained := edu.get("date_obtained", "").strip():
-            date_range = date_obtained
-        else:
-            date_range = date_from or date_to
+        date_obtained = edu.get("date_obtained", "").strip()
+
+        # Fix GG: do NOT append "[date_range]" to the institution cell — dates
+        # are already rendered in the date_from / date_to columns by the dynamic
+        # template. Appending them here produces double date display in the output.
         institution = edu.get("institution", "").strip()
+
+        # Fix GG edge case: single-year diploma where only date_obtained is
+        # present. Write date_obtained into date_from so the template's
+        # "{{ date_from }} – {{ date_to }}" substitution still renders something
+        # in the date column rather than leaving it blank.
+        if not date_from and date_obtained:
+            date_from = date_obtained
+
         education.append(
             {
-                "institution": (f"{institution} [{date_range}]" if date_range else institution),
-                "date_from": date_from,
-                "date_to": date_to,
-                "degree": edu.get("degree", "").strip(),
+                # Fix HH: _xml_str escapes & -> &amp; so ampersands in institution
+                # names are not stripped by the docx XML parser.
+                "institution": _xml_str(institution),
+                "date_from": _xml_str(date_from),
+                "date_to": _xml_str(date_to),
+                "degree": _xml_str(edu.get("degree", "").strip()),
             }
         )
 
@@ -107,26 +140,30 @@ def _build_context(cv: dict) -> dict:
     for lang in cv.get("languages", []):
         languages.append(
             {
-                "language": lang.get("language", "").strip(),
-                "reading_cefr": _resolve_cefr(lang, "reading_cefr", "reading_raw"),
-                "speaking_cefr": _resolve_cefr(lang, "speaking_cefr", "speaking_raw"),
-                "writing_cefr": _resolve_cefr(lang, "writing_cefr", "writing_raw"),
+                "language": _xml_str(lang.get("language", "").strip()),
+                "reading_cefr": _xml_str(_resolve_cefr(lang, "reading_cefr", "reading_raw")),
+                "speaking_cefr": _xml_str(_resolve_cefr(lang, "speaking_cefr", "speaking_raw")),
+                "writing_cefr": _xml_str(_resolve_cefr(lang, "writing_cefr", "writing_raw")),
             }
         )
 
-    # Other skills — list to single display string
-    other_skills_display = "; ".join(s.strip() for s in cv.get("other_skills", []) if s.strip())
+    # Fix HH: _xml_str applied to joined strings so ampersands in skill names
+    # are not stripped by the XML parser.
+    other_skills_display = _xml_str(
+        "; ".join(s.strip() for s in cv.get("other_skills", []) if s.strip())
+    )
 
     # Key qualifications — prefer generated_fields over extracted list
+    # Fix HH: _xml_str escapes any '&' in bullet text.
     generated_kq = [
-        gf.get("content", "").strip()
+        _xml_str(gf.get("content", "").strip())
         for gf in cv.get("generated_fields", [])
         if gf.get("field_key") == "key_qualifications" and gf.get("content", "").strip()
     ]
-    extracted_kq = [kq.strip() for kq in cv.get("key_qualifications", []) if kq.strip()]
+    extracted_kq = [_xml_str(kq.strip()) for kq in cv.get("key_qualifications", []) if kq.strip()]
     key_qualifications = generated_kq if generated_kq else extracted_kq
 
-    publications = [p.strip() for p in cv.get("publications", []) if p.strip()]
+    publications = [_xml_str(p.strip()) for p in cv.get("publications", []) if p.strip()]
 
     # Countries of experience rows
     countries_of_experience = []
@@ -138,55 +175,64 @@ def _build_context(cv: dict) -> dict:
         )
         countries_of_experience.append(
             {
-                "country": ce.get("country", "").strip(),
-                "date_from": date_from,
-                "date_to": date_to,
-                "date_range": date_range,
+                "country": _xml_str(ce.get("country", "").strip()),
+                "date_from": _xml_str(date_from),
+                "date_to": _xml_str(date_to),
+                "date_range": _xml_str(date_range),
             }
         )
 
     # Relevant projects rows
+    # Fix HH: _xml_str applied to all string fields so ampersands in project
+    # names, client names, locations, etc. are not stripped by the XML parser.
     relevant_projects = []
     for proj in cv.get("relevant_projects", []):
         relevant_projects.append(
             {
-                "date_from": proj.get("date_from", "").strip(),
-                "date_to": proj.get("date_to", "").strip(),
-                "location": proj.get("location", "").strip(),
-                "company": proj.get("company", "").strip(),
-                "positions_held": proj.get("positions_held", "").strip(),
-                "project_name": proj.get("project_name", "").strip(),
-                "main_project_features": proj.get("main_project_features", "").strip(),
-                "activities_performed": proj.get("activities_performed", "").strip(),
-                "client": proj.get("client", "").strip(),
-                "donor": proj.get("donor", "").strip(),
-                "duration": proj.get("duration", "").strip(),
+                "date_from": _xml_str(proj.get("date_from", "").strip()),
+                "date_to": _xml_str(proj.get("date_to", "").strip()),
+                "location": _xml_str(proj.get("location", "").strip()),
+                "company": _xml_str(proj.get("company", "").strip()),
+                "positions_held": _xml_str(proj.get("positions_held", "").strip()),
+                "project_name": _xml_str(proj.get("project_name", "").strip()),
+                "main_project_features": _xml_str(proj.get("main_project_features", "").strip()),
+                "activities_performed": _xml_str(proj.get("activities_performed", "").strip()),
+                "client": _xml_str(proj.get("client", "").strip()),
+                "donor": _xml_str(proj.get("donor", "").strip()),
+                "duration": _xml_str(proj.get("duration", "").strip()),
             }
         )
 
+    # Fix HH: _xml_str applied to all string values in the context dict.
+    # docxtpl renders {{ variable }} by string-substituting into OOXML; bare
+    # '&' characters would produce invalid XML and get stripped by the parser.
+    nat1 = pi.get("nationality", "").strip()
+    nat2 = pi.get("nationality_second", "").strip()
+    nationality_display = _xml_str(f"{nat1} and {nat2}" if (nat1 and nat2) else (nat1 or nat2))
+
     return {
         # Identity
-        "proposed_position": cv.get("proposed_position", "").strip(),
-        "category": cv.get("category", "").strip(),
-        "employer": cv.get("employer", "").strip(),
-        "present_position": cv.get("present_position", "").strip(),
-        "years_with_firm": cv.get("years_with_firm", "").strip(),
+        "proposed_position": _xml_str(cv.get("proposed_position", "").strip()),
+        "category": _xml_str(cv.get("category", "").strip()),
+        "employer": _xml_str(cv.get("employer", "").strip()),
+        "present_position": _xml_str(cv.get("present_position", "").strip()),
+        "years_with_firm": _xml_str(cv.get("years_with_firm", "").strip()),
         # Personal info (flat for template convenience)
         "personal_info": {
-            "title": pi.get("title", "").strip(),
-            "first_names": pi.get("first_names", "").strip(),
-            "family_name": pi.get("family_name", "").strip(),
-            "full_name": pi.get("full_name", "").strip(),
-            "date_of_birth": pi.get("date_of_birth", "").strip(),
-            "place_of_residence": pi.get("place_of_residence", "").strip(),
-            "email": pi.get("email", "").strip(),
-            "phone": pi.get("phone", "").strip(),
+            "title": _xml_str(pi.get("title", "").strip()),
+            "first_names": _xml_str(pi.get("first_names", "").strip()),
+            "family_name": _xml_str(pi.get("family_name", "").strip()),
+            "full_name": _xml_str(pi.get("full_name", "").strip()),
+            "date_of_birth": _xml_str(pi.get("date_of_birth", "").strip()),
+            "place_of_residence": _xml_str(pi.get("place_of_residence", "").strip()),
+            "email": _xml_str(pi.get("email", "").strip()),
+            "phone": _xml_str(pi.get("phone", "").strip()),
         },
         # Derived display fields
         "nationality_display": nationality_display,
         "other_skills_display": other_skills_display,
-        "membership_professional_bodies": cv.get("membership_professional_bodies", "").strip(),
-        "other_relevant_info": cv.get("other_relevant_info", "").strip(),
+        "membership_professional_bodies": _xml_str(cv.get("membership_professional_bodies", "").strip()),
+        "other_relevant_info": _xml_str(cv.get("other_relevant_info", "").strip()),
         # Sections
         "education": education,
         "languages": languages,
@@ -194,10 +240,11 @@ def _build_context(cv: dict) -> dict:
         "publications": publications,
         # Optional sections — rendered when non-empty (requires template placeholders)
         "references": [
-            r for r in cv.get("references", [])
+            {k: _xml_str(v) if isinstance(v, str) else v for k, v in r.items()}
+            for r in cv.get("references", [])
             if r.get("name", "").strip()
         ],
-        "certification_declaration": cv.get("certification_declaration", "").strip(),
+        "certification_declaration": _xml_str(cv.get("certification_declaration", "").strip()),
         "countries_of_experience": countries_of_experience,
         "relevant_projects": relevant_projects,
     }

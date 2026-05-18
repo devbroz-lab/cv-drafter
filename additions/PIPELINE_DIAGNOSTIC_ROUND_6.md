@@ -2,7 +2,7 @@
 
 **Date**: May 2026
 **Status**: ✓ Complete
-**Tests after round**: 421/421 passing
+**Tests after round**: 461/461 passing
 
 ---
 
@@ -80,6 +80,34 @@ and non-empty guarantee tests.
 
 ---
 
+### Fix AB — Employment-only fallback routing to project-overview fields
+
+**Problem**: Round 6 Run 4 (Jennifer Garvey, GIZ, South Africa ToR) —
+`relevant_projects` was empty while `employment_record` contained rich entries.
+A3 had nothing to score, the rendered projects section went blank, and A4 had
+insufficient project evidence for strong generation.
+
+**Scope**: `pipeline/agents/cv_extractor.py` prompt and Python safety net.
+
+**Planned changes**:
+- In `SYSTEM_PROMPT_A1` `### Employment-only fallback (all formats)`, route
+  `employment_record.description` to `relevant_projects.main_project_features`
+  (not `activities_performed`).
+- Keep `activities_performed` empty in fallback mode when source only provides
+  employment descriptions.
+- Align mapping semantics to Python fallback behavior:
+  `employer → project_name + company`; `client` remains empty.
+- Update short-detail warning wording to reference `main_project_features`.
+- Update `_apply_employment_fallback` to mirror the same mapping so fallback is
+  deterministic even when the LLM misses prompt instructions.
+
+**Tests**:
+- Extend `tests/test_cv_extractor_prompt.py` for fallback mapping markers.
+- Add `tests/test_employment_fallback.py` to lock Python fallback routing and
+  warning behavior.
+
+---
+
 ## Deferred to Round 7
 
 ### Fix S — Compressor word target scaled to `page_limit`
@@ -115,6 +143,7 @@ across sufficient production runs.
 3. ✓ Fix V — A1 merged-cell project name extraction.
 4. ✓ Fix W — A1 date inversion auto-correct across all four date-field types.
 5. ✓ Fix Y — A2 `scoring_keywords` prompt fix + soft-flag validator.
+6. ✓ Fix AB — A1 employment-only fallback mapping + Python safety net alignment.
 
 ---
 
@@ -133,6 +162,7 @@ across sufficient production runs.
 | `tests/test_cv_extractor_prompt.py` | Fix V, Fix W | 6 new tests |
 | `tests/test_tor_summarizer_prompt.py` | Fix Y | 2 new tests |
 | `tests/test_validators.py` | Fix Y | 6 new tests (`TestCheckTorSummarizerWarnings`) |
+| `tests/test_employment_fallback.py` | Fix AB | **New file.** 20 tests for `_apply_employment_fallback` mapping, warning text, and idempotence |
 | `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` | Docs | Status, fix table, sequence, round summary updated |
 | `additions/PIPELINE_DIAGNOSTIC_ROUND_6.md` | Docs | This file — status updated to Complete |
 | `markdowns/PROMPT_REVIEW_CONTEXT.md` | Docs | 6 new rows + §7 updated |
@@ -144,7 +174,7 @@ across sufficient production runs.
 
 ## Test results
 
-421/421 passing (28 new tests added: 12 Fix Z, 2 Fix AA, 6 Fix V+W, 2 Fix Y prompt, 6 Fix Y validator).
+461/461 passing (48 new tests added: 12 Fix Z, 2 Fix AA, 6 Fix V+W, 2 Fix Y prompt, 6 Fix Y validator, 20 Fix AB fallback).
 
 ---
 
@@ -159,15 +189,28 @@ across sufficient production runs.
 4. **Fix W — all four field types covered**: Date inversion check and auto-correct applied to all `date_from`/`date_to` pairs: `relevant_projects[]`, `education[]`, `employment_record[]`, `countries_of_experience[]`. "Present" always sorts later than any literal date.
 
 5. **Fix Y — new validator function**: `check_tor_summarizer_warnings` added to `pipeline/validators.py`; wired in `run_phase1` after `tor_summarizer.run`.
+6. **Fix AB — preserve renderer paragraph semantics**: Employment fallback now
+   maps descriptive employment text to `main_project_features` (project overview)
+   and leaves `activities_performed` empty (candidate-actions paragraph). This
+   aligns fallback output with template paragraph ordering and prevents rich
+   project text from appearing in the wrong block.
 
 ---
 
 ## Production validation
 
-*(Pending Round 6 production runs.)*
+- Round 6 Run 4 surfaced Issue AB: employment-only CVs produced
+  `relevant_projects: []`, causing blank rendered project sections.
+- Fix AB implemented in Round 6: A1 prompt fallback + Python safety net now
+  dual-populate `relevant_projects` from `employment_record` using
+  `description → main_project_features`.
+- Validation expectation after fix: employment-only CVs now produce scored
+  `relevant_projects` entries for A3/A4 and non-blank project sections in output.
 
 ---
 
 ## Issues surfaced in Round 6 production validation
 
-*(Pending Round 6 production runs.)*
+- **Issue AB** — No relevant projects when CV uses employment-only format.
+  Root cause: A3 scored only `relevant_projects` while A1 had routed content to
+  `employment_record`. Resolution implemented in this round via Fix AB.

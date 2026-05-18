@@ -471,6 +471,95 @@ When a `compression` object is included, it is **output metadata** from Agent 6:
 
 ---
 
+#### `GET /sessions/{session_id}/warnings`
+Retrieve all pipeline warnings aggregated from every stage of the session.
+
+These warning lists have always been written to the run-directory JSON artifacts but were
+not previously transmitted to the frontend. This endpoint collects them from all four
+sources and returns them in a single response. It is additive — no existing response shapes
+are modified.
+
+**Availability**: Safe to call at any point after Phase 1 completes. Returns `warnings: []`
+(not `404`) when no warnings were produced. Returns partial results if some artifacts are
+not yet present — each source is read independently and failures are non-fatal.
+
+**Response** (200):
+```json
+{
+  "session_id": "20260425_143022_a1b2",
+  "warnings": [
+    {
+      "stage": "extraction",
+      "kind": "extraction_warning",
+      "message": "relevant_projects[3].project_name could not be determined from source table layout.",
+      "details": null
+    },
+    {
+      "stage": "alignment",
+      "kind": "threshold_activation",
+      "message": "Project 'BADGE Grid Expansion' dropped — score 0.28 below threshold 0.30.",
+      "details": null
+    },
+    {
+      "stage": "manifest",
+      "kind": "scoring_keywords_empty",
+      "message": "tor_summarizer: all scoring_keywords lists empty despite non-empty ToR input.",
+      "details": { "tor_word_count": 142 }
+    },
+    {
+      "stage": "generation",
+      "kind": "generation_warning",
+      "message": "More than 1 bullet has source='tor' (weak CV grounding).",
+      "details": null
+    }
+  ],
+  "counts": {
+    "extraction": 1,
+    "alignment": 1,
+    "manifest": 1,
+    "generation": 1
+  }
+}
+```
+
+**Response fields**:
+- `warnings`: All warnings in pipeline stage order (extraction → alignment → manifest → generation). Empty list when all checks passed.
+- `counts`: Per-stage warning counts. Keys are always present with value `0` when a stage produced no warnings.
+- `warnings[].stage`: One of `"extraction"`, `"alignment"`, `"manifest"`, `"generation"`.
+- `warnings[].kind`: Warning type string as written by the pipeline. See table below.
+- `warnings[].message`: Human-readable warning message.
+- `warnings[].details`: Optional structured dict for programmatic consumers; `null` when absent.
+
+**Stage → source file mapping**:
+
+| `stage` | Source file | Field read |
+|---------|-------------|------------|
+| `extraction` | `cv_data.json` | `data.extraction_warnings[]` |
+| `alignment` | `mapped_cv.json` | `alignment.warnings[]` |
+| `manifest` | `manifest.json` | `warnings[]` (structured dicts or plain strings) |
+| `generation` | `generated_fields.json` | `generation_warnings[]` |
+
+**Common `kind` values**:
+
+| `kind` | Stage | When emitted |
+|--------|-------|-------------|
+| `extraction_warning` | `extraction` | Generic A1 extraction quality issue (date inversion, placeholder text, merged-cell name failure, etc.) |
+| `alignment_warning` | `alignment` | Generic A3 alignment issue |
+| `threshold_activation` | `alignment` | A3 dropped a project below the relevance threshold |
+| `scoring_keywords_empty` | `manifest` | A2 returned empty keyword lists despite non-empty ToR |
+| `position_title_empty` | `manifest` | A2 returned no position title |
+| `generation_warning` | `generation` | Generic A4/A6 generation issue |
+| `generation_warnings_high` | `generation` | A4 flagged a high-severity generation concern |
+| `generation_warnings_low` | `generation` | A4 flagged a low-severity generation concern |
+
+**Example**:
+```bash
+curl http://127.0.0.1:8000/sessions/{session_id}/warnings \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+---
+
 ### Content Resolution (Reviewer Blocked)
 
 #### `POST /sessions/{session_id}/resolve`
@@ -797,6 +886,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 - **Field Edit vs. Resolve**: `POST /field-edit` is for post-completion user-directed revisions (LLM-mediated, entry condition `completed`). `POST /resolve` is for unblocking a `reviewer_blocked` pipeline run (caller-provided values, no LLM). They are independent.
 - **Deprecated**: `POST /sessions/{id}/comments` is deprecated and replaced by `POST /sessions/{id}/field-edit`. The comments endpoint is kept for backward compatibility but emits `Deprecation: true`, `Sunset`, and `Link` response headers on every call.
 - **Solvability**: Every finding in `GET /review` carries `solvability: "pipeline" | "human"`. Pipeline-solvable issues can be addressed via `POST /field-edit`; human-solvable issues require recruiter intervention via `POST /resolve`.
+- **Warnings endpoint**: `GET /warnings` is additive — it does not modify any existing response shapes. It aggregates warnings that were always written to disk by the pipeline but previously never transmitted to the frontend. Returns `warnings: []` when the pipeline ran cleanly; safe to call at any pipeline stage after Phase 1. `GET /review` (generation quality) and `GET /warnings` (extraction/alignment/manifest/generation soft-flags) are complementary — neither replaces the other.
 - **Compressor tuning**: Word-count targets and ratios come from **`FORMAT_PROFILES`** and orchestrator defaults (`PIPELINE_CONTEXT.md`). They are not end-user settings; **`POST /sessions` does not save optional `target_words` / `compression_ratio` fields to the DB** in the current implementation.
 - **World Bank Format**: Supported via `target_format: "world_bank"` (requires `templates/WB-Template.docx` alongside the existing GIZ template at runtime).
 

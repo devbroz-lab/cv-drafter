@@ -110,6 +110,10 @@ def _build_context(cv: dict) -> dict:
 
         relevant_projects.append(
             {
+                # Fix EE (cv_tor_mapper.py) sorts relevant_projects newest-first at
+                # mapper write-time, before A4 generates detailed_tasks. Both lists
+                # therefore share the same index order, making this positional pairing
+                # safe: detailed_tasks[i] corresponds to relevant_projects[i].
                 "tasks_assigned": detailed_tasks[i] if i < len(detailed_tasks) else "",
                 "project_name": proj.get("project_name", "").strip(),
                 "year": year,

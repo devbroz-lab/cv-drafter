@@ -6,10 +6,11 @@ infrastructure. Based on live session artifacts (`cv_data.json`, `mapped_cv.json
 `generated_fields.json`, `output.docx`) alongside all agent source files and the
 renderer.
 
-**Implementation status** (as of Round 7 — May 2026): Fixes 1, 3, 5a, 6, 7,
+**Implementation status** (as of Round 7.5 — May 2026): Fixes 1, 3, 5a, 6, 7,
 8 (Parts 1/2/3), 9, Fix J, Fix M (Parts 1 and 2), Round 4 fixes (N, O, P, Q, R),
-Round 5 fixes (U, 4b, 4, 2, 5b), Round 6 fixes (V, W, Y, Z, AA), and Round 7
-fix (CC — employment fallback field mapping) are implemented.
+Round 5 fixes (U, 4b, 4, 2, 5b), Round 6 fixes (V, W, Y, Z, AA, AB), Round 7
+fixes (DD, EE, FF-A, FF-B, GG, HH, R7-5, II-A, II-B, JJ, KK, LL, MM), and Round
+7.5 fixes (NN, OO, PP-A, PP-B, QQ-A, QQ-B, RR, SS, TT) are all implemented.
 Fix S and Fix 4 threshold recalibration remain deferred to Round 8.
 
 Cross-reference with: `PIPELINE_CONTEXT.md`, `RENDERER_CONTEXT.md`,
@@ -23,6 +24,8 @@ Round-by-round implementation records:
 - `PIPELINE_DIAGNOSTIC_ROUND_4.md`
 - `PIPELINE_DIAGNOSTIC_ROUND_5.md`
 - `PIPELINE_DIAGNOSTIC_ROUND_6.md`
+- `PIPELINE_DIAGNOSTIC_ROUND_7.md`
+- `PIPELINE_DIAGNOSTIC_ROUND_7.5.md`
 
 ---
 
@@ -390,7 +393,7 @@ preserve originals for artifact write.
 
 ---
 
-### Issue CC — `relevant_projects` empty for employment-only format CVs — **FIXED (Fix CC)**
+### Issue AB — `relevant_projects` empty for employment-only format CVs — **FIXED (Fix AB)**
 
 **What was observed**: Round 6 Run 4 (Jennifer Garvey, GIZ, South Africa ToR) —
 `cv_data.json` had `relevant_projects: []` and `employment_record` with 12 fully
@@ -419,6 +422,275 @@ proceeds with zero project content.
 net (`_apply_employment_fallback`) mirrors the same mapping. Short-description
 entries (< 5 words) emit a per-entry `extraction_warnings` entry referencing
 `main_project_features`.
+
+---
+
+### Issue R7-1 — All-projects-below-threshold: quality signal breaks down — **OBSERVATION (no fix)**
+
+**What was observed**: Runs 1, 5, 7 (Round 7) — all kept projects scored below the
+relevance threshold; floor guarantee activated for all five. A4 generated polished
+hedged bullets for a fundamentally misaligned candidate. Pipeline behaviour is
+correct (generate best available, flag heavily, block at reviewer) but the output
+quality signal is degraded when the floor overrides all threshold decisions.
+
+**Resolution**: No pipeline fix needed. Correct behaviour. Recorded for awareness.
+
+---
+
+### Issue R7-2 — Lexical keyword scorer misses regional-to-national vocabulary overlap — **OBSERVATION (no fix)**
+
+**What was observed**: Run 1 Round 7 — SAEP Outcome 3 project (regional SAPP
+transmission work) scored 0.20 against a South Africa-specific ToR. The work is
+SA-relevant but the CV uses "Southern Africa / SAPP" language. Lexical matching
+cannot detect the semantic overlap.
+
+**Resolution**: Known limitation of lexical matching. Tied to future
+embedding-based semantic scoring. No fix in current scope.
+
+---
+
+### Issue R7-3 — CLOSED
+
+Suspected: empty `activities_performed` on WB-format CVs impairs A3 keyword
+scoring. Confirmed not a bug — `keyword_overlap_score` in `precompute_utils.py`
+already checks all four project fields including `main_project_features`. Low
+scores in Run 2 were genuine. Closed.
+
+---
+
+### Issue R7-4 — Placeholder KQ entries reaching A4 — **OBSERVATION (keep-and-warn)**
+
+**What was observed**: Run 3 Round 7 (Stojadinovic, 43-project CV) — source CV
+contained unfilled template placeholders in `key_qualifications` (e.g. "X years
+experience in [mention area]"). A1 correctly warned via `extraction_warnings`;
+A4 correctly worked around them and emitted generation warnings.
+
+**Resolution**: Keep-and-warn behaviour confirmed correct. Information is preserved;
+the LLM is tolerant of partial placeholder content. No fix needed.
+
+---
+
+### Issue R7-5 — Education rows not sorted newest-first in GIZ renderer — **FIXED (Fix R7-5)**
+
+**What was observed**: Runs 2 and 3 Round 7 — education entries in GIZ output
+Table 1 rendered in source CV order (oldest-first) rather than GIZ convention
+(newest-first).
+
+**Recommended fix**: Sort education list descending by `date_to` in
+`_build_context` in `templates/giz.py`.
+
+---
+
+### Issue GG — Education date duplication in GIZ renderer — **FIXED (Fix GG)**
+
+**What was observed**: Runs 1, 2, 3, 5 Round 7 — education rows in GIZ Table 1
+show date range twice. Three variants: standard duplication, missing `date_from`,
+and single-year entry.
+
+**Root cause**: `_build_context` in `giz.py` constructs `institution` as
+`f"{institution} [{date_range}]"` and also passes `date_from`/`date_to` as
+separate template variables, causing both to render in the same cell.
+
+**Recommended fix**: Remove `[{date_range}]` suffix from the institution string.
+
+---
+
+### Issue HH — Ampersand `&` stripping in GIZ renderer — **FIXED (Fix HH)**
+
+**What was observed**: Runs 3 and 5 Round 7 — ampersand characters stripped in
+rendered output: "Legal & Policy" → "Legal  Policy". Affects all text fields.
+
+**Root cause**: Raw `&` in manually-constructed strings bypasses `docxtpl`'s XML
+escaping.
+
+**Recommended fix**: Ensure all manually-constructed strings pass through Jinja2
+rendering or apply `html.escape()` before context insertion.
+
+---
+
+### Issue II — Field Editor (A7) and renderer not in sync on rendered field scope — **FIXED (Fix II-A, Fix II-B)**
+
+**What was observed**: (a) WB renderer pairs `detailed_tasks[i]` to
+`relevant_projects[i]` by pure list position. Fix EE re-sorting projects would
+break this pairing. (b) A7 can edit `relevant_projects[i].activities_performed`
+on GIZ runs — the edit writes correctly to `generated_fields.json` but is never
+rendered in GIZ output (field not placed in any cell by `giz_dynamic_template.py`).
+
+**Recommended fix**: (a) Apply Fix EE sort at mapper write-time so A4 generates
+tasks in already-sorted order — no renderer change needed. (b) Add
+`RENDERER_FIELD_MAP` to A7 per donor; redirect or warn on non-rendered field edits.
+
+---
+
+### Issue JJ — A4 truncation-and-restore unnecessary with current model — **FIXED (Fix JJ)**
+
+**What was observed**: `_truncate_project_text_for_a4` caps A4's input to 150
+words per project field. `_restore_truncated_project_text` correctly restores
+originals before artifact write. Both steps are redundant with
+`claude-sonnet-4-6`'s 200k context window. Limits A4's grounding quality.
+
+**Recommended fix**: Remove both helpers and the associated `cv_data_full`
+preservation step from `fields_generator.run()`.
+
+---
+
+### Issue KK — A6 truncation causes silent permanent data loss — **FIXED (Fix KK)**
+
+**What was observed**: `_truncate_project_text_for_a6` caps A6's input to 150
+words per project field with no restoration step. Run 6 Round 7: BADGE project
+`activities_performed` truncated from 694 to 150 words — 544 words permanently
+lost, not compressed.
+
+**Root cause**: Fix Z was introduced for an earlier, smaller model. With
+`claude-sonnet-4-6` and `max_tokens=16000` on the output side only, there is no
+truncation risk from full-length input.
+
+**Recommended fix**: Remove `_truncate_project_text_for_a6` and all associated
+constants, call sites, and manifest warning emissions entirely.
+
+---
+
+### Issue LL — A6 compresses `activities_performed` for GIZ runs despite field not being rendered — **FIXED (Fix LL)**
+
+**What was observed**: GIZ renderer (`giz_dynamic_template.py`) never places
+`activities_performed` in any table cell, despite `giz.py` passing it to the
+template context. A6 compresses this field for GIZ runs, wasting compression
+budget on a field that does not appear in the output document.
+
+**Recommended fix**: Pass donor format to A6; exclude `activities_performed` from
+the GIZ compressible field set in both the word-count arithmetic and the prompt.
+WB runs are unaffected — `activities_performed` is rendered in WB output.
+
+---
+
+### Issue MM — Pipeline warnings not transmitted to frontend via API — **FIXED (Fix MM)**
+
+**What was observed**: `extraction_warnings`, `alignment.warnings`, and
+`manifest.warnings` are written to disk correctly but no API endpoint reads or
+transmits them to the frontend. Only `generation_warnings`, `review.high_severity`,
+and `review.low_severity` from `generated_fields.json` reach the UI.
+
+**Recommended fix**: Extend `api/routers/sessions.py` to aggregate and transmit
+all warning types. Display/abstraction decisions are the UI developer's
+responsibility.
+
+---
+
+### Issue R7.5-A — A5 flags passive constructions in source-extracted fields — **FIXED (Fix NN)**
+
+**What was observed**: Runs 1–4 Round 7.5. A5 flags `activities_performed` and
+`main_project_features` for passive/infinitive verb constructions. These are direct
+extractions of the candidate's own words. Style flags inflate issue count, push
+runs over the `high_severity_count_unusual` threshold, and produce recruiter-facing
+review items that cannot be acted on.
+
+**Recommended fix**: Add scope restriction to `SYSTEM_PROMPT_A5` — style checks
+permitted only on `generated_fields[*].content`. Source-extracted fields are out
+of scope for style review but remain in scope for factual accuracy checks.
+
+---
+
+### Issue R7.5-C — A4 generates verb-led KQ bullets; convention is noun/stat-led — **FIXED (Fix OO)**
+
+**What was observed**: Runs 2, 3, 4 Round 7.5. A4 generates verb-led bullets
+("Delivered...", "Drafted...", "Conducted..."). Human editors use noun-phrase or
+year-count-led bullets ("25 years of professional experience...", "8 years of
+experience in Grid codes..."). Runs 3 and 4 produced near-identical bullets for
+different candidates against the same ToR — A4 over-indexes on ToR requirements
+and under-differentiates on candidate-specific evidence.
+
+**Recommended fix**: Add to `SYSTEM_PROMPT_A4`: (a) strong preference for
+noun/stat-led KQ bullet openings; (b) candidate-anchoring rule requiring at least
+one candidate-specific detail per bullet. Applies to both GIZ and WB formats.
+
+---
+
+### Issue R7.5-E — Project cap too aggressive; current role dropped on geography mismatch — **FIXED (Fix PP-A, Fix PP-B)**
+
+**What was observed**: Runs 2, 3, 4 Round 7.5. Human versions include 19–21
+projects; pipeline keeps 5–9. Kostari's current role (Power Central Asia,
+01/2021–present) dropped because geography does not match Western Balkans ToR.
+Human editors always include the current role regardless of geographic fit.
+
+**Recommended fix**: (a) Broaden A3 keyword scoring tolerance; raise MIN=10,
+MAX=30. (b) Add `_protect_current_role` Python step in `cv_tor_mapper.py` to
+unconditionally restore any `date_to = "Present"` project dropped by cap
+enforcement.
+
+---
+
+### Issue R7.5-F — Education table includes marginal training/seminar entries — **FIXED (Fix QQ-A, Fix QQ-B)**
+
+**What was observed**: Runs 2, 3 Round 7.5. Pipeline includes short courses,
+seminars, and training programs in GIZ Table 1 alongside degree qualifications.
+Human editors retain only degree-level qualifications.
+
+**Recommended fix**: (a) A1 prompt: `education[]` for degree-level qualifications
+only; non-degree entries → `training[]`. (b) A4 prompt: draw from `training[]` as
+additional KQ evidence source (mirrors Fix FF-B pattern for `certifications[]`).
+Alternative 3 selected over A1-side appending to `key_qualifications[]`.
+
+---
+
+### Issue R7.5-H — Fix EE bug: `countries_of_experience` sorted by wrong key — **FIXED (Fix RR)**
+
+**What was observed**: Run 4 Round 7.5 (Kostari). Kosovo (01/1999–present) sorts
+third because Fix EE sorts `countries_of_experience` by `date_from` descending,
+placing 1999 last. Ongoing assignments should float to top.
+
+**Recommended fix**: Change sort key for `countries_of_experience` to `date_to`
+descending. `_parse_date` already returns `_current_date()` for "Present", so
+ongoing assignments sort highest naturally.
+
+---
+
+### Issue R7.5-I — `countries_of_experience` identical date-range rows not collapsed — **FIXED (Fix SS)**
+
+**What was observed**: Human CVs collapse countries sharing identical date ranges
+into one row. Pipeline renders one row per country entry.
+
+**Recommended fix**: Add `collapse_by_date_range` to `precompute_utils.py` (exact
+match on `(date_from, date_to)` only; deterministic; general-purpose). Apply at
+mapper write-time so both renderer and A7 see the same collapsed data. Processing
+order in `cv_tor_mapper.py`: enforce cap → protect current role → sort projects →
+collapse countries → sort countries → write.
+
+---
+
+### Issue R7.5-J — GIZ dual nationality uses "/" separator instead of "and" — **FIXED (Fix TT)**
+
+**What was observed**: Run 4 Round 7.5 (Kostari). Human version: "Republic of
+Montenegro and Republic of Kosovo". Pipeline: "Republic of Montenegro / Republic of
+Kosovo".
+
+**Recommended fix**: Change `nationality_display` construction in `giz.py`
+`_build_context` from `f"{nat1} / {nat2}"` to `f"{nat1} and {nat2}"`.
+Unconditional for all GIZ dual-nationality entries. WB renderer unaffected.
+
+---
+
+### Issue DD — A1 routes "References" section citations to wrong field — **FIXED (Fix DD)**
+
+**What was observed**: Source CVs with a "References" section containing academic
+citations may be routed to `references[]` (contact reference schema) rather than
+`publications[]`.
+
+**Recommended fix**: Add explicit routing rule to `SYSTEM_PROMPT_A1` — citations
+(author, title, journal/year) → `publications[]`; contact references (name, org,
+email/phone) → `references[]`.
+
+---
+
+### Issue FF — Certifications not routed to `certifications[]` or used by A4 — **FIXED (Fix FF-A, Fix FF-B)**
+
+**What was observed**: Run 2 Round 7 (Hadjicostas) — "Eur Ing" and "C Eng"
+credentials present in source CV but `certifications: []` in cv_data. Content
+routed exclusively to `membership_professional_bodies`. A4 has no instruction to
+draw from `certifications[]` when generating KQ bullets.
+
+**Recommended fix**: (a) A1 prompt: route formal credentials to both
+`certifications[]` and `membership_professional_bodies`. (b) A4 prompt: treat
+`certifications[]` as eligible KQ source material.
 
 ---
 
@@ -471,7 +743,29 @@ explicitly reference all `generative_field_keys` entries — for WB format,
 | Fix Y | A2 `scoring_keywords` prompt fix + soft-flag validator | ✓ Implemented | Round 6 |
 | Fix Z | Compressor word cap on A6 input to prevent JSON truncation | ✓ Implemented | Round 6 |
 | Fix AA | A4 minimum output guarantee extended to all `generative_field_keys` | ✓ Implemented | Round 6 |
-| Fix CC | A1 employment-only fallback — populate `relevant_projects` from `employment_record` (`description → main_project_features`) | ✓ Implemented | Round 7 |
+| Fix AB | A1 employment-only fallback — populate `relevant_projects` from `employment_record` (`description → main_project_features`) | ✓ Implemented | Round 6 |
+| Fix DD | A1 prompt: "References" section citations → `publications[]` | ✓ Implemented | Round 7 |
+| Fix EE | Post-cap chronological sort of `relevant_projects` + `countries_of_experience` at mapper write-time | ✓ Implemented | Round 7 |
+| Fix FF-A | A1 prompt: formal credentials → `certifications[]` AND `membership_professional_bodies` | ✓ Implemented | Round 7 |
+| Fix FF-B | A4 prompt: draw from `certifications[]` as KQ bullet source | ✓ Implemented | Round 7 |
+| Fix GG | GIZ renderer: remove education date duplication (three variants) | ✓ Implemented | Round 7 |
+| Fix HH | GIZ renderer: ampersand `&` escaping across all text fields | ✓ Implemented | Round 7 |
+| Fix R7-5 | GIZ renderer: education rows newest-first sort | ✓ Implemented | Round 7 |
+| Fix II-A | WB renderer: document positional `detailed_tasks` ↔ `relevant_projects` dependency; Fix EE sort timing ensures correctness | ✓ Implemented | Round 7 |
+| Fix II-B | A7: add `RENDERER_FIELD_MAP` per donor; redirect/warn on non-rendered field edits | ✓ Implemented | Round 7 |
+| Fix JJ | Remove A4 truncation-and-restore logic (redundant with current model) | ✓ Implemented | Round 7 |
+| Fix KK | Remove A6 truncation entirely (silent data loss — no restoration step) | ✓ Implemented | Round 7 |
+| Fix LL | A6 donor-aware compression: exclude `activities_performed` for GIZ (field not rendered) | ✓ Implemented | Round 7 |
+| Fix MM | Transmit all pipeline warnings to frontend via API | ✓ Implemented | Round 7 |
+| Fix NN | A5 prompt: restrict style checks to `generated_fields[*].content` only | ✓ Implemented | Round 7.5 |
+| Fix OO | A4 prompt: strong preference for noun/stat-led KQ bullets; candidate-anchoring rule (both donors) | ✓ Implemented | Round 7.5 |
+| Fix PP-A | A3 prompt: broaden keyword scoring tolerance; raise `MIN=10`, `MAX=30` thresholds | ✓ Implemented | Round 7.5 |
+| Fix PP-B | A3: protect most-recent/current-role project unconditionally after cap enforcement | ✓ Implemented | Round 7.5 |
+| Fix QQ-A | A1 prompt: degree-only routing for `education[]`; non-degree entries → `training[]` | ✓ Implemented | Round 7.5 |
+| Fix QQ-B | A4 prompt: draw from `training[]` as additional KQ evidence source | ✓ Implemented | Round 7.5 |
+| Fix RR | Fix EE bug: `countries_of_experience` sort by `date_to` descending (not `date_from`) | ✓ Implemented | Round 7.5 |
+| Fix SS | `precompute_utils.py`: `collapse_by_date_range` general utility; applied to `countries_of_experience` at mapper write-time | ✓ Implemented | Round 7.5 |
+| Fix TT | GIZ renderer: dual nationality separator `" / "` → `" and "` | ✓ Implemented | Round 7.5 |
 
 ---
 
@@ -514,13 +808,37 @@ explicitly reference all `generative_field_keys` entries — for WB format,
 24. ✓ Fix V — A1 project name extraction from merged-cell table layout.
 25. ✓ Fix W — A1 date inversion auto-correct across all four date-field types.
 26. ✓ Fix Y — A2 `scoring_keywords` prompt fix + soft-flag validator.
+27. ✓ Fix AB — A1 employment-only fallback: `description → main_project_features`; Python safety net `_apply_employment_fallback`.
 
 ### Round 7 (completed — May 2026)
-27. ✓ Fix CC — A1 employment-only fallback: `description → main_project_features`; Python safety net `_apply_employment_fallback`.
+28. ✓ Fix EE — Post-cap chronological sort (mapper write-time; Fix II-A depends on it).
+29. ✓ Fix II-A — WB task-project pairing: document positional dependency; confirm Fix EE timing.
+30. ✓ Fix KK — Remove A6 truncation (silent data loss — highest correctness priority).
+31. ✓ Fix JJ — Remove A4 truncation (quality improvement; redundant with current model).
+32. ✓ Fix LL — A6 donor-aware compression: exclude `activities_performed` for GIZ.
+33. ✓ Fix GG — Education date duplication in GIZ renderer.
+34. ✓ Fix HH — Ampersand escaping in GIZ renderer.
+35. ✓ Fix R7-5 — Education newest-first sort in GIZ renderer.
+36. ✓ Fix DD — A1 prompt: citations routing.
+37. ✓ Fix FF-A — A1 prompt: certifications dual-routing.
+38. ✓ Fix FF-B — A4 prompt: certifications as KQ source.
+39. ✓ Fix II-B — A7 `RENDERER_FIELD_MAP` per donor.
+40. ✓ Fix MM — API warning transmission.
 
-### Round 8 (next)
-28. ⏳ Fix S — Compressor word target scaled to `page_limit` (pending calibration data).
-29. ⏳ Fix 4 threshold recalibration — review MIN/MAX constants once Fix 4 scoring distribution is stable.
+### Round 7.5 (completed — May 2026)
+41. ✓ Fix PP-B — Protect current role unconditionally after cap enforcement.
+42. ✓ Fix RR — `countries_of_experience` sort by `date_to` descending.
+43. ✓ Fix SS — `collapse_by_date_range` utility + call site in mapper.
+44. ✓ Fix PP-A — Broaden A3 scoring tolerance + raise MIN=10, MAX=30.
+45. ✓ Fix TT — GIZ dual nationality " and " separator.
+46. ✓ Fix NN — A5 style check scope restricted to generated fields only.
+47. ✓ Fix OO — A4 noun/stat-led KQ style + candidate-anchoring.
+48. ✓ Fix QQ-A — A1 degree-only routing for `education[]`.
+49. ✓ Fix QQ-B — A4 draws from `training[]` as KQ evidence source.
+
+### Round 8 (next — pending production data)
+50. ⏳ Fix S — Compressor word target scaled to `page_limit` (pending ≥5 calibration runs per template).
+51. ⏳ Fix 4 threshold recalibration — review MIN/MAX constants once Fix 4 scoring stabilises.
 
 ---
 
@@ -533,9 +851,9 @@ explicitly reference all `generative_field_keys` entries — for WB format,
 | Round 3 | ✓ Complete | Fix M (Parts 1/2) | 294/294 |
 | Round 4 | ✓ Complete | Fix N, P, Q, O, R | 332/332 |
 | Round 5 | ✓ Complete | Fix U, Fix 4b, Fix 4, Fix 2, Fix 5b | 393/393 |
-| Round 6 | ✓ Complete | Fix Z, AA, V, W, Y | 421/421 |
-| Round 7 | ✓ Complete | Fix CC (employment fallback field mapping) | 461/461 |
-| Round 8 | ⏳ Pending | Fix S, Fix 4 threshold recalibration | — |
+| Round 6 | ✓ Complete | Fix Z, AA, V, W, Y, AB | 461/461 |
+| Round 7 | ✓ Complete | Fix DD, EE, FF-A, FF-B, GG, HH, R7-5, II-A, II-B, JJ, KK, LL, MM (13 fixes) | — |
+| Round 7.5 | ✓ Complete | Fix NN, OO, PP-A, PP-B, QQ-A, QQ-B, RR, SS, TT (9 fixes) | 444/444 |
 
 Full implementation detail, file-level change tables, and production validation
 results for each round are in the per-round files listed at the top of this document.
@@ -544,9 +862,10 @@ results for each round are in the per-round files listed at the top of this docu
 
 ## 5. What this document does not cover
 
-- World Bank renderer (`wb.py`) — not examined in this review. Assume analogous
-  issues exist in `_build_context` for the WB format, particularly around
-  `detailed_tasks` and `employment_record`.
+- World Bank renderer (`wb.py`) — examined in Round 7. `activities_performed` is
+  rendered in WB output (confirmed via `wb_dynamic_template.py`). Fix LL excludes
+  it from GIZ compression only. Fix II-A documents the positional
+  `detailed_tasks` ↔ `relevant_projects` pairing dependency.
 - `precompute_utils.py` date parsing — `_CURRENT_YEAR` and `_CURRENT_MONTH`
   constants have been replaced with a `_current_date()` helper (using
   `datetime.date.today()`) so "Present" durations and year ranges are always

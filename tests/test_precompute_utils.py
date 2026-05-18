@@ -10,12 +10,14 @@ Covers:
   - keyword_overlap_score (Fix 4, Round 5)
   - geography_score (Fix 4, Round 5)
   - compute_composite_score (Fix 4, Round 5)
+  - collapse_by_date_range (Fix SS, Round 7.5)
 """
 
 import datetime
 
 import pytest
 from pipeline.precompute_utils import (
+    collapse_by_date_range,
     compute_composite_score,
     compute_project_duration,
     compute_project_year,
@@ -379,3 +381,96 @@ class TestComputeCompositeScore:
 
     def test_custom_weights(self):
         assert compute_composite_score(0.5, 0.5, keyword_weight=0.4, geography_weight=0.2) == pytest.approx(0.30)
+
+
+# ---------------------------------------------------------------------------
+# collapse_by_date_range — Fix SS (Round 7.5)
+# ---------------------------------------------------------------------------
+
+def _country(name: str, date_from: str, date_to: str) -> dict:
+    return {"country": name, "date_from": date_from, "date_to": date_to}
+
+
+class TestCollapseByDateRange:
+    def test_empty_input(self):
+        assert collapse_by_date_range([], label_field="country") == []
+
+    def test_single_entry_passes_through(self):
+        entries = [_country("Kosovo", "January 1999", "Present")]
+        result = collapse_by_date_range(entries, label_field="country")
+        assert len(result) == 1
+        assert result[0]["country"] == "Kosovo"
+
+    def test_identical_range_merged_alphabetically(self):
+        """Two countries with identical date range → one row, labels sorted."""
+        entries = [
+            _country("Croatia",  "January 2014", "December 2018"),
+            _country("Albania",  "January 2014", "December 2018"),
+        ]
+        result = collapse_by_date_range(entries, label_field="country")
+        assert len(result) == 1
+        assert result[0]["country"] == "Albania, Croatia"
+
+    def test_multiple_countries_same_range_sorted_alphabetically(self):
+        entries = [
+            _country("Montenegro",     "2014", "2018"),
+            _country("Albania",        "2014", "2018"),
+            _country("Bosnia",         "2014", "2018"),
+            _country("North Macedonia","2014", "2018"),
+        ]
+        result = collapse_by_date_range(entries, label_field="country")
+        assert len(result) == 1
+        expected = "Albania, Bosnia, Montenegro, North Macedonia"
+        assert result[0]["country"] == expected
+
+    def test_different_ranges_kept_separate(self):
+        """Entries with different date ranges are NOT merged."""
+        entries = [
+            _country("Kosovo",  "January 1999", "Present"),
+            _country("Albania", "January 2014", "December 2018"),
+        ]
+        result = collapse_by_date_range(entries, label_field="country")
+        assert len(result) == 2
+
+    def test_first_occurrence_order_preserved(self):
+        """Output row order follows first occurrence of each date-range group."""
+        entries = [
+            _country("Kosovo",  "1999", "Present"),
+            _country("Albania", "2014", "2018"),
+            _country("Serbia",  "1999", "Present"),   # same range as Kosovo
+        ]
+        result = collapse_by_date_range(entries, label_field="country")
+        # First group: (1999, Present) — Kosovo then Serbia
+        # Second group: (2014, 2018) — Albania
+        assert len(result) == 2
+        assert result[0]["date_from"] == "1999"
+        assert result[0]["date_to"] == "Present"
+        assert result[1]["date_from"] == "2014"
+
+    def test_non_country_label_field(self):
+        """Works with arbitrary label_field name."""
+        entries = [
+            {"city": "Pristina", "date_from": "2010", "date_to": "2015"},
+            {"city": "Tirana",   "date_from": "2010", "date_to": "2015"},
+        ]
+        result = collapse_by_date_range(entries, label_field="city")
+        assert len(result) == 1
+        assert result[0]["city"] == "Pristina, Tirana"
+
+    def test_non_label_fields_taken_from_first_occurrence(self):
+        """Non-label fields on merged rows come from the first entry."""
+        entries = [
+            {"country": "B", "date_from": "2010", "date_to": "2015", "extra": "first"},
+            {"country": "A", "date_from": "2010", "date_to": "2015", "extra": "second"},
+        ]
+        result = collapse_by_date_range(entries, label_field="country")
+        assert result[0]["extra"] == "first"
+
+    def test_exact_match_only_no_fuzzy(self):
+        """'2014' and 'January 2014' are different keys — not merged."""
+        entries = [
+            _country("Albania", "2014",         "2018"),
+            _country("Croatia", "January 2014", "2018"),
+        ]
+        result = collapse_by_date_range(entries, label_field="country")
+        assert len(result) == 2

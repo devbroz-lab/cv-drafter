@@ -45,6 +45,8 @@ from api.models.requests import (
     TorPoolSelectionRequest,
     TorPoolSelectionResponse,
     TorPoolsResponse,
+    WarningEntry,
+    WarningsResponse,
 )
 from api.services import storage as storage_service
 from api.services.auth import AuthenticatedUser, get_current_user
@@ -1174,3 +1176,98 @@ async def get_output(
         review=gf.get("review"),
         compression=gf.get("compression"),
     )
+
+
+# ── GET /sessions/{id}/warnings ───────────────────────────────────────────────
+
+
+@router.get("/{session_id}/warnings", response_model=WarningsResponse)
+async def get_warnings(
+    session_id: str,
+    current_user: CurrentUser,
+) -> WarningsResponse:
+    """
+    Return all pipeline warnings aggregated from every stage for this session.
+
+    Four sources are collected and tagged by stage:
+      - cv_data.json        → extraction_warnings[]   (Agent 1 extraction issues)
+      - mapped_cv.json      → alignment.warnings[]    (Agent 3 scoring issues)
+      - manifest.json       → warnings[]              (orchestrator-level warnings)
+      - generated_fields.json → generation_warnings[] (Agent 4/6 generation issues)
+
+    Fix MM: these warning lists were previously written to disk but never
+    transmitted to the frontend. This endpoint is additive — no existing
+    response shapes are modified.
+    """
+    _require_owned_session(session_id, current_user.user_id)
+
+    from pipeline.paths import get_run_dir
+
+    run_dir = get_run_dir(session_id)
+    warnings: list[WarningEntry] = []
+
+    # Stage 1: extraction warnings from cv_data.json
+    cv_data_path = run_dir / "cv_data.json"
+    if cv_data_path.exists():
+        try:
+            cv_raw = json.loads(cv_data_path.read_text(encoding="utf-8"))
+            for msg in cv_raw.get("data", {}).get("extraction_warnings", []):
+                warnings.append(
+                    WarningEntry(stage="extraction", kind="extraction_warning", message=str(msg))
+                )
+        except Exception:
+            pass  # non-fatal — return what we can
+
+    # Stage 2: alignment warnings from mapped_cv.json
+    mapped_path = run_dir / "mapped_cv.json"
+    if mapped_path.exists():
+        try:
+            mapped_raw = json.loads(mapped_path.read_text(encoding="utf-8"))
+            for msg in mapped_raw.get("alignment", {}).get("warnings", []):
+                warnings.append(
+                    WarningEntry(stage="alignment", kind="alignment_warning", message=str(msg))
+                )
+        except Exception:
+            pass
+
+    # Stage 3: manifest-level warnings from manifest.json
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for w in manifest_raw.get("warnings", []):
+                if isinstance(w, dict):
+                    warnings.append(
+                        WarningEntry(
+                            stage="manifest",
+                            kind=w.get("kind", "manifest_warning"),
+                            message=w.get("message", str(w)),
+                            details=w.get("details"),
+                        )
+                    )
+                else:
+                    warnings.append(
+                        WarningEntry(stage="manifest", kind="manifest_warning", message=str(w))
+                    )
+        except Exception:
+            pass
+
+    # Stage 4: generation warnings from generated_fields.json
+    gf_path = run_dir / "generated_fields.json"
+    if gf_path.exists():
+        try:
+            gf_raw = json.loads(gf_path.read_text(encoding="utf-8"))
+            for msg in gf_raw.get("generation_warnings", []):
+                warnings.append(
+                    WarningEntry(stage="generation", kind="generation_warning", message=str(msg))
+                )
+        except Exception:
+            pass
+
+    # Build per-stage counts
+    counts: dict[str, int] = {"extraction": 0, "alignment": 0, "manifest": 0, "generation": 0}
+    for w in warnings:
+        if w.stage in counts:
+            counts[w.stage] += 1
+
+    return WarningsResponse(session_id=session_id, warnings=warnings, counts=counts)

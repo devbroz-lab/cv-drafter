@@ -69,7 +69,9 @@ their "if not found, leave as []" rules.
   in GIZ extraction. Agent 5 must not require it as evidence. Also left as `""`
   in employment-only fallback mode (Fix CC): descriptive employment text is routed
   to `main_project_features` instead, so the renderer's project-overview paragraph
-  is populated first.
+  is populated first. As of Round 7 (Fix LL), Agent 6 also skips this field for
+  GIZ runs entirely — it is not rendered in any GIZ table cell, so compressing it
+  wastes word budget. WB runs compress it normally.
 
 ### DistilledToR — key points for prompt writers
 
@@ -186,6 +188,15 @@ normal sessions. `passed: false` is surfaced via `GET /review` instead.
 | Fix W — A1 date ordering validation + auto-correct | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` `### Date ordering validation` section — all four date-field types) |
 | Fix Y — A2 `scoring_keywords` reorder + soft-flag | **Implemented** | `pipeline/agents/tor_summarizer.py` (section moved after `position_title`; non-empty guarantee), `pipeline/validators.py` (`check_tor_summarizer_warnings`), `pipeline/orchestrator.py` (wired in `run_phase1`) |
 | Fix CC — A1 employment-only fallback: `description → main_project_features` | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` `### Employment-only fallback` section: `description → main_project_features`, `employer → project_name + company`, `activities_performed` / `client` / `donor` left as `""`; `_apply_employment_fallback` Python safety net with matching routing; short-description warning references `main_project_features`) |
+| Fix DD — A1 prompt: "References" section citations → `publications[]` | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` — added explicit routing rule: academic citations → `publications[]`; contact references → `references[]`) |
+| Fix FF-A — A1 prompt: formal credentials dual-route to `certifications[]` + `membership_professional_bodies` | **Implemented** | `pipeline/agents/cv_extractor.py` (`SYSTEM_PROMPT_A1` — formal engineering/professional credentials route to both `certifications[]` and `membership_professional_bodies`) |
+| Fix FF-B — A4 prompt: add `certifications[]` as KQ evidence source | **Implemented** | `pipeline/agents/fields_generator.py` (`SYSTEM_PROMPT_A4` — `certifications[]` added to evidence sources list for generating KQ bullets) |
+| Fix JJ — Remove A4 truncation-and-restore (redundant with current model) | **Implemented** | `pipeline/agents/fields_generator.py` — `_truncate_project_text_for_a4`, `_restore_truncated_project_text`, `A4_INPUT_PROJECT_WORD_CAP`, and `cv_data_full` preservation removed. A4 receives full untruncated project text. |
+| Fix KK — Remove A6 truncation entirely (silent data loss) | **Implemented** | `pipeline/agents/compressor.py` — `_truncate_project_text_for_a6`, `A6_INPUT_PROJECT_WORD_CAP`, and all `input_field_truncated` manifest warning emissions removed. |
+| Fix LL — A6 donor-aware compression: exclude `activities_performed` for GIZ | **Implemented** | `pipeline/agents/compressor.py` — for GIZ runs, `activities_performed` cleared in `cv_data_for_a6` before A6 LLM call and restored after. `SYSTEM_PROMPT_A6` updated with donor-aware field exclusion note. |
+| Fix EE — Post-cap chronological sort of `relevant_projects` + `countries_of_experience` | **Implemented** | `pipeline/agents/cv_tor_mapper.py` — `_sort_by_date_desc` applied after `_enforce_threshold_and_cap`; uses `_parse_date` from `precompute_utils.py`. |
+| Fix II-B — A7 `RENDERER_FIELD_MAP` + redirect/skip non-rendered fields | **Implemented** | `pipeline/agents/field_editor.py` — `RENDERER_FIELD_MAP`, `_RENDERER_REDIRECT_MAP`, `_check_renderer_field()` added; `SYSTEM_PROMPT_A7` updated with donor-aware field path guidance. |
+| Fix MM — API warning endpoint | **Implemented** | `api/models/requests.py` (`WarningEntry`, `WarningsResponse` models); `api/routers/sessions.py` (`GET /sessions/{id}/warnings` endpoint aggregating warnings from all four run-directory artifacts) |
 
 ---
 
@@ -403,14 +414,16 @@ add to, or remove from it."
 | Word count tolerance filtering | Python post-processing after A5 | `content_reviewer._filter_word_count_pedantry` |
 | Relevance scoring (deferred) | Python pre-processing before A3 | `cv_tor_mapper._precompute_relevance_scores` stub — see `RELEVANCE_SCORING_DESIGN.md` |
 | Threshold enforcement + project cap | Python post-processing after A3 (in `run()`) | `cv_tor_mapper._enforce_threshold_and_cap` |
-| Per-project text cap for A4 input | Python pre-processing before A4 | `fields_generator._truncate_project_text_for_a4` |
+| Per-project text cap for A4 input | **Removed (Fix JJ, Round 7)** — A4 receives full text | `fields_generator._truncate_project_text_for_a4` deleted |
 | CEFR field population | Python post-processing after A1 LLM | `cv_extractor._populate_cefr_fields` using `pipeline.utils.cefr.map_cefr` |
-| A4 input text restoration | Python post-processing after A4 LLM (in `fields_generator.run`) | `fields_generator._restore_truncated_project_text` restores `activities_performed` / `main_project_features` from pre-truncation source before writing `generated_fields.json` |
+| A4 input text restoration | **Removed (Fix JJ, Round 7)** — no truncation, no restore step needed | `fields_generator._restore_truncated_project_text` deleted |
 | CEFR scale direction mapping | Python post-processing after A1 LLM (in `cv_extractor._populate_cefr_fields`) | `_apply_cefr_with_direction(raw, direction)` — uses `map_cefr` (1_best default) or `map_numeric_scale_inverted` (1_worst) based on `CVData.language_scale_direction` |
 | A3 threshold + cap enforcement | Python post-processing after A3 LLM (in `cv_tor_mapper.run`) | `_enforce_threshold_and_cap` — thresholds `0.30/0.40/0.50`; floor `min(MIN, total)`; current constants: `MIN=5`, `MAX=15` |
 | A3 Python relevance pre-compute | Python pre-processing before A3 LLM (in `cv_tor_mapper.run`) | `_precompute_relevance_scores` — keyword overlap (35%) + geography (15%) = 50% Python-computed; LLM adjusts ±0.10 for semantic dimensions |
 | A2 scoring keywords | LLM extraction in A2 (`tor_summarizer.run`) | `SYSTEM_PROMPT_A2` `### scoring_keywords` (reordered to after `position_title`, Fix Y) — three lists (`role_implied`, `scope_implied`, `explicit`) with non-empty guarantee |
-| A6 pre-processing truncation | Python pre-processing before A6 LLM | `compressor._truncate_project_text_for_a6` — caps `activities_performed` / `main_project_features` at `A6_INPUT_PROJECT_WORD_CAP` (150) words per project; emits `input_field_truncated` manifest warnings |
+| A6 pre-processing truncation | **Removed (Fix KK, Round 7)** — A6 receives full text | `compressor._truncate_project_text_for_a6` deleted; no `input_field_truncated` warnings emitted |
+| A6 donor-aware field exclusion | Python pre-processing before A6 LLM (Fix LL, Round 7) | `compressor.run` — for GIZ runs, `activities_performed` cleared in `cv_data_for_a6` before A6 call, restored after (field not rendered in GIZ output; WB unaffected) |
+| `relevant_projects` + `countries_of_experience` chronological sort | Python post-processing after A3 LLM (Fix EE, Round 7) | `cv_tor_mapper._sort_by_date_desc` — descending `date_from`; applied after `_enforce_threshold_and_cap`; uses `_parse_date` from `precompute_utils.py` |
 | A1 extraction normalisation | LLM prompt instructions in A1 | `SYSTEM_PROMPT_A1` — unfilled placeholder detection (Fix U); merged-cell project name extraction (Fix V); date ordering validation + auto-correct (Fix W); employment-only fallback routing (Fix CC). |
 | Employment-only fallback (Python safety net) | Python post-processing after A1 LLM (in `cv_extractor.run`) | `cv_extractor._apply_employment_fallback` — when `relevant_projects` is empty and `employment_record` has entries, maps each employment entry: `description → main_project_features`, `employer → project_name + company`, `activities_performed / client / donor = ""`. Idempotent — skips when projects already present. |
 | Manifest soft-flag warnings | Post-processing after A2, A4, A5, A6 | `check_tor_summarizer_warnings` (after A2), `check_fields_generator_warnings`, `check_content_reviewer_warnings`, `check_compressor_warnings` — results appended via `manifest.append_warning` |

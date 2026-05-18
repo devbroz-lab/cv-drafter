@@ -332,3 +332,45 @@ class OutputResponse(BaseModel):
     generation_warnings: list[str]
     review: dict[str, Any] | None
     compression: dict[str, Any] | None
+
+
+# ── Pipeline warnings aggregation ────────────────────────────────────────────
+
+
+class WarningEntry(BaseModel):
+    """A single warning from any stage of the pipeline."""
+
+    stage: str = Field(
+        description=(
+            "Pipeline stage that produced the warning. One of: "
+            "'extraction' (Agent 1), 'alignment' (Agent 3), "
+            "'manifest' (orchestrator), 'generation' (Agent 4/6)."
+        )
+    )
+    kind: str = Field(
+        description=(
+            "Warning kind/type as written by the pipeline stage. "
+            "Examples: 'threshold_activation', 'input_field_truncated', "
+            "'generation_warnings_high', 'date_inversion'."
+        )
+    )
+    message: str = Field(description="Human-readable warning message.")
+    details: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured detail dict for programmatic consumers.",
+    )
+
+
+class WarningsResponse(BaseModel):
+    """Aggregated warnings from all pipeline stages for a session."""
+
+    session_id: str
+    warnings: list[WarningEntry] = Field(
+        description=(
+            "All warnings across extraction, alignment, manifest, and generation stages, "
+            "in pipeline stage order. Empty list when no warnings were produced."
+        )
+    )
+    counts: dict[str, int] = Field(
+        description="Count of warnings per stage (keys: extraction, alignment, manifest, generation).",
+    )
