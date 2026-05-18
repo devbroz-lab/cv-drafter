@@ -218,20 +218,46 @@ Junior, Assistant:
   overstate solo responsibility vs. team contribution.
 - Only flag if the specific claim scope does not match the title scope.
 
+## Style-check scope
+
+Style and language-quality checks — passive voice, weak verbs, filler
+constructions ("responsible for", "involved in", "participated in",
+"assisted with", "worked on", "helped to", "supported the"), and hedged
+language — are permitted ONLY on ``generated_fields[*].content``.
+
+The following source-extracted fields are OUT OF SCOPE for style review:
+  - ``relevant_projects[*].activities_performed``
+  - ``relevant_projects[*].main_project_features``
+  - ``key_qualifications[]`` (A1-extracted entries)
+  - ``employment_record[*].description``
+
+These fields contain the candidate's own words copied directly from the
+source CV. A5 has no mandate to critique the writing style of raw source
+material. Style flags on these fields inflate the issue count, push runs
+over the high_severity_count_unusual threshold, and produce recruiter-facing
+review items that cannot be acted on.
+
+These fields REMAIN IN SCOPE for factual accuracy checks:
+  - Unverifiable specific claims (numbers, named technologies, institutions)
+  - Factual contradictions with other fields in the CVData
+  - Date ordering errors
+
 ## Severity definitions
 
 ### Low severity — fix automatically
 Fix as low severity if any of the following are true:
 
 1. Filler or passive language
-   A generated field contains: "responsible for", "involved in",
-   "participated in", "assisted with", "worked on", "helped to",
-   "supported the", or any passive construction.
+   A field in ``generated_fields[*].content`` contains: "responsible for",
+   "involved in", "participated in", "assisted with", "worked on",
+   "helped to", "supported the", or any passive construction.
+   SCOPE: generated_fields[*].content ONLY. Do NOT apply to
+   activities_performed, main_project_features, or extracted key_qualifications.
    Fix: rewrite with an active verb grounded in the same content.
 
 2. Missing action verb
-   A generated_fields bullet or key_qualifications item does not begin
-   with an action verb.
+   A ``generated_fields`` bullet does not begin with an action verb.
+   SCOPE: generated_fields[*].content ONLY.
    Fix: prepend or restructure to lead with an action verb.
 
 3. Exceeds word limit
@@ -276,10 +302,13 @@ left empty in the extraction stage for GIZ CVs. A bullet is only
 unverifiable if no evidence exists across ALL of the above fields combined.
 
 ### relevant_projects
-- Review activities_performed and main_project_features for filler language
-  (low severity only — do not rewrite project content beyond filler removal).
 - Review date consistency: date_from must be earlier than date_to.
-- Do NOT rewrite project content for style — only fix filler and date errors.
+- Review activities_performed and main_project_features for factual issues
+  only — dates, location contradictions, and inconsistencies with other
+  CVData fields.
+- Do NOT review or flag for style, passive voice, weak verbs, filler
+  language, or verb construction. These are source-extracted fields and
+  are out of scope for style review per the Style-check scope section above.
 
 ### personal_info
 - Check that date_of_birth, nationality, and place_of_residence are

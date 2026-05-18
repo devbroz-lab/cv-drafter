@@ -19,7 +19,6 @@ from anthropic import Anthropic
 from models import CompressionResult, CVData
 from pipeline.config import ANTHROPIC_MODEL
 from pipeline.manifest import append_warning, update_step
-import copy
 
 from pipeline.precompute_utils import (
     count_compressible_words_total,
@@ -29,46 +28,6 @@ from pipeline.precompute_utils import (
 from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
-
-# Fix Z: per-project word cap for A6 input — prevents JSON truncation on
-# dense CVs. Unlike Fix 8 Part 3 (A4), there is no restoration step because
-# A6 is explicitly compressing these fields.
-A6_INPUT_PROJECT_WORD_CAP: int = 150
-_A6_CAPPED_FIELDS: tuple[str, ...] = ("activities_performed", "main_project_features")
-
-
-def _truncate_project_text_for_a6(cv_data: dict) -> tuple[dict, list[dict]]:
-    """
-    Return (truncated_cv_data, truncation_events).
-
-    truncated_cv_data: deep copy with activities_performed and
-    main_project_features capped to A6_INPUT_PROJECT_WORD_CAP per project.
-    Text beyond the cap is dropped (unlike Fix 8 Part 3 for A4, there is
-    no restoration — A6 is expected to compress these fields anyway).
-    Truncated text is suffixed with "…" (U+2026).
-
-    truncation_events: list of dicts recording each truncation:
-      [{"project_name": str, "field": str,
-        "original_word_count": int, "truncated_word_count": int}, ...]
-    Empty when no field exceeded the cap.
-    """
-    result = copy.deepcopy(cv_data)
-    events: list[dict] = []
-    for project in result.get("relevant_projects", []):
-        pname = project.get("project_name", "")
-        for field in _A6_CAPPED_FIELDS:
-            text = project.get(field, "") or ""
-            words = text.split()
-            if len(words) > A6_INPUT_PROJECT_WORD_CAP:
-                project[field] = " ".join(words[:A6_INPUT_PROJECT_WORD_CAP]) + "\u2026"
-                events.append({
-                    "project_name": pname,
-                    "field": field,
-                    "original_word_count": len(words),
-                    "truncated_word_count": A6_INPUT_PROJECT_WORD_CAP,
-                })
-    return result, events
-
 
 # Fields that must NEVER be passed to compression logic.
 PROTECTED_FIELDS: frozenset[str] = frozenset(
@@ -201,11 +160,18 @@ was inadvertently altered — do not alter them intentionally.
 - years_with_firm
 - world_bank_affiliation
 
+## Donor-aware field exclusion
+If `<cv_data>` shows `activities_performed` as empty on all projects, do not
+attempt to populate or compress it — treat it as absent for this run.
+This occurs for GIZ runs where `activities_performed` is not rendered in the
+output document and has been excluded from the compression scope.
+
 ## Compressible fields
 Only these fields are eligible for compression:
 - relevant_projects: activities_performed, main_project_features
   (date_from, date_to, location, client, company, donor, positions_held,
   project_name, duration, year are all protected within each project)
+  Note: if activities_performed is empty on all projects, exclude it entirely.
 - employment_record: description
   (from_date, to_date, employer, positions_held, location, country are all
   protected within each entry — only the narrative description is compressible)
@@ -279,6 +245,8 @@ def run(
     Returns:
         Validated (possibly compressed) CVData instance.
     """
+    import copy
+
     update_step(run_dir, "compressor", "running")
 
     gf_path = run_dir / "generated_fields.json"
@@ -290,16 +258,25 @@ def run(
     tor_raw = json.loads((run_dir / "tor_data.json").read_text(encoding="utf-8"))
     tor_data = resolve_tor_for_agents(tor_raw, context="compressor.run")
 
-    # Fix Z: cap project text in A6's input to prevent JSON truncation on
-    # dense CVs. Unlike Fix 8 Part 3 (A4), no restoration is needed because
-    # A6 is explicitly compressing these fields. Information beyond cap is
-    # intentionally excluded from the compression scope.
-    cv_data_a6_input, truncation_events = _truncate_project_text_for_a6(cv_data_in)
+    manifest_raw = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    donor = manifest_raw.get("params", {}).get("donor", "").strip().lower().replace(" ", "_")
 
-    # P16/P2-A6: pre-compute word counts in Python
-    # Recompute word counts on the truncated input — target arithmetic must
-    # be based on what A6 actually sees.
-    words_per_field = count_words_per_field(cv_data_a6_input)
+    # Fix LL: donor-aware exclusion of activities_performed for GIZ.
+    # The GIZ renderer never places activities_performed in any table cell, so
+    # compressing it wastes A6's budget on content that won't appear in the output.
+    # For WB runs, activities_performed IS rendered, so it remains compressible.
+    # Strip-then-merge: pass cv_data_for_a6 to A6 with activities_performed cleared
+    # on all projects, then restore the originals from cv_data_in after A6 returns.
+    if donor == "giz":
+        cv_data_for_a6 = copy.deepcopy(cv_data_in)
+        for proj in cv_data_for_a6.get("relevant_projects", []):
+            proj["activities_performed"] = ""
+    else:
+        cv_data_for_a6 = cv_data_in
+
+    # P16/P2-A6: pre-compute word counts in Python using the donor-filtered input
+    # so that target arithmetic is based on what A6 actually sees and will compress.
+    words_per_field = count_words_per_field(cv_data_for_a6)
     current_words = sum(words_per_field.values())
     effective_target = target_words if target_words > 0 else int(current_words * compression_ratio)
 
@@ -316,21 +293,6 @@ def run(
         gf_raw["compression"] = compression_result.model_dump()
         gf_raw["generation_warnings"] = generation_warnings
         gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding="utf-8")
-        # Emit soft-flag warnings for any fields truncated before A6 compression.
-        for evt in truncation_events:
-            append_warning(
-                run_dir,
-                stage="compressor",
-                kind="input_field_truncated",
-                message=(
-                    f"Project '{evt['project_name']}' field '{evt['field']}' was "
-                    f"truncated from {evt['original_word_count']} to "
-                    f"{evt['truncated_word_count']} words before A6 compression. "
-                    f"Content beyond {A6_INPUT_PROJECT_WORD_CAP} words was excluded "
-                    f"from compression scope."
-                ),
-                details=evt,
-            )
         update_step(run_dir, "compressor", "done")
         return CVData.model_validate(cv_data_in)
 
@@ -343,7 +305,7 @@ def run(
     }
 
     user_message = (
-        f"<cv_data>\n{json.dumps(cv_data_a6_input, indent=2)}\n</cv_data>\n\n"
+        f"<cv_data>\n{json.dumps(cv_data_for_a6, indent=2)}\n</cv_data>\n\n"
         f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
         f"<compression_params>\n{json.dumps(compression_params, indent=2)}\n</compression_params>\n\n"
         f"<generation_warnings>\n{json.dumps(generation_warnings, indent=2)}\n</generation_warnings>"
@@ -373,6 +335,18 @@ def run(
         update_step(run_dir, "compressor", "failed")
         raise ValueError(f"Compressor returned invalid output: {exc}\n\nRaw:\n{raw}") from exc
 
+    # Fix LL (post-A6): restore activities_performed from cv_data_in for GIZ runs.
+    # A6 never saw or compressed activities_performed for GIZ (it was cleared
+    # in cv_data_for_a6), so the original values from cv_data_in are the source
+    # of truth. Match by project index (safe because Fix EE guarantees stable
+    # ordering in mapped_cv.json before A4 runs, and A6 must not reorder projects).
+    if donor == "giz":
+        out_projects = cv_data_out_raw.get("relevant_projects", [])
+        in_projects = cv_data_in.get("relevant_projects", [])
+        for i, out_proj in enumerate(out_projects):
+            if i < len(in_projects):
+                out_proj["activities_performed"] = in_projects[i].get("activities_performed", "")
+
     # P16 (post-compute): overwrite LLM's estimated words_after with authoritative count
     compression_result.words_after = count_compressible_words_total(cv_data_out_raw)
     # Also enforce the Python-computed words_before (the LLM was told to copy it,
@@ -393,22 +367,6 @@ def run(
     # P19: write generation_warnings passthrough back to file
     gf_raw["generation_warnings"] = generation_warnings
     gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    # Emit soft-flag warnings for any fields truncated before A6 compression.
-    for evt in truncation_events:
-        append_warning(
-            run_dir,
-            stage="compressor",
-            kind="input_field_truncated",
-            message=(
-                f"Project '{evt['project_name']}' field '{evt['field']}' was "
-                f"truncated from {evt['original_word_count']} to "
-                f"{evt['truncated_word_count']} words before A6 compression. "
-                f"Content beyond {A6_INPUT_PROJECT_WORD_CAP} words was excluded "
-                f"from compression scope."
-            ),
-            details=evt,
-        )
 
     update_step(run_dir, "compressor", "done")
     return cv_data_out

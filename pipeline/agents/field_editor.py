@@ -41,6 +41,7 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
+from pipeline.utils import strip_code_fences
 from pipeline.utils.cefr import map_cefr as _map_cefr
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,100 @@ log = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
 # MODEL = "claude-haiku-4-5-20251001"
+
+# ---------------------------------------------------------------------------
+# Fix II-B: RENDERER_FIELD_MAP — per-donor rendered project fields
+# ---------------------------------------------------------------------------
+# Keyed by normalised donor format string. Value: set of project-level field
+# names that are actually placed in cells in the output .docx for that donor.
+# A7 uses this map to detect and redirect edits to non-rendered fields before
+# calling Claude, avoiding invisible changes that write to the data model but
+# produce no visible change in the rendered document.
+
+RENDERER_FIELD_MAP: dict[str, set[str]] = {
+    "giz": {
+        # Fields rendered in GIZ Table 2 (relevant_projects section):
+        "project_name",
+        "date_from",
+        "date_to",
+        "location",
+        "company",
+        "positions_held",
+        "main_project_features",
+        "client",
+        "donor",
+        "duration",
+        # NOTE: "activities_performed" is NOT in this set — it is passed to the
+        # template context by giz.py but is never placed in any table cell by
+        # giz_dynamic_template.py. Editing it on a GIZ run has no visible effect.
+    },
+    "world_bank": {
+        # Fields rendered in WB Table (relevant_projects section):
+        "project_name",
+        "year",
+        "location",
+        "client",
+        "main_project_features",
+        "positions_held",
+        "activities_performed",
+        # "tasks_assigned" is the rendered field (from generated_fields[].content),
+        # not a raw project field — edits go through generated_fields[i].content paths.
+    },
+}
+
+# Non-rendered project field → nearest rendered equivalent, per donor.
+# Used to redirect edits so the change is visible in the output document.
+_RENDERER_REDIRECT_MAP: dict[str, dict[str, str]] = {
+    "giz": {
+        "activities_performed": "main_project_features",
+    },
+    "world_bank": {},
+}
+
+
+def _check_renderer_field(
+    field_path: str,
+    donor: str,
+) -> tuple[str | None, str | None]:
+    """
+    Check whether the target field is rendered for the given donor.
+
+    Returns (redirect_path, skip_reason):
+      - (None, None)              — field IS rendered; proceed normally.
+      - (redirect_path, None)     — field is not rendered but can be redirected.
+      - (None, skip_reason)       — field is not rendered and has no equivalent;
+                                    caller should skip with the reason string.
+    """
+    if not donor or donor not in RENDERER_FIELD_MAP:
+        return None, None  # unknown donor — no renderer awareness, proceed normally
+
+    # Extract the leaf field key from paths like
+    # "relevant_projects[1].activities_performed" -> "activities_performed"
+    leaf = _field_key_from_path(field_path)
+
+    # Only check project-level fields (path must contain "relevant_projects")
+    if "relevant_projects" not in field_path:
+        return None, None
+
+    rendered_fields = RENDERER_FIELD_MAP[donor]
+    if leaf in rendered_fields:
+        return None, None  # rendered — no action needed
+
+    # Field is NOT rendered. Try to redirect.
+    redirect_leaf = _RENDERER_REDIRECT_MAP.get(donor, {}).get(leaf)
+    if redirect_leaf:
+        # Build the redirect path: replace the leaf in the original path
+        import re as _re
+        redirect_path = _re.sub(r"(\w+)$", redirect_leaf, field_path)
+        return redirect_path, None
+
+    # No redirect available — skip with explanation
+    reason = (
+        f"Field '{leaf}' is not rendered in the {donor.upper()} output document "
+        f"and has no rendered equivalent. Edit has no visible effect."
+    )
+    return None, reason
+
 
 # ---------------------------------------------------------------------------
 # P5: Word-limit table — per (donor, field_key)
@@ -426,6 +521,17 @@ it, trim to fit while preserving the instruction's intent.
     World Bank — forward-looking task statements, action verbs, outcome-oriented.
 - Do not add commentary before or after the JSON object.
 
+DONOR-AWARE FIELD PATHS
+-----------------------
+Field paths are donor-aware. Some fields exist in the data model but are not
+rendered in the output document for a given donor format:
+  - GIZ:        "activities_performed" on relevant_projects is NOT rendered.
+  - World Bank: "activities_performed" on relevant_projects IS rendered.
+
+The pipeline redirects edits to non-rendered fields to the nearest rendered
+equivalent before calling you (e.g. GIZ activities_performed → main_project_features).
+If you receive a field path, it has already been validated as a rendered field.
+
 CONTEXT FIELDS (provided in the user message)
 ---------------------------------------------
   Field key      — The logical CV field being edited (e.g. key_qualifications,
@@ -507,10 +613,6 @@ def build_user_prompt(
     )
 
 
-# The prefill string locks the opening of Claude's response to a JSON object,
-# making it structurally impossible for Claude to write preamble text before it.
-ASSISTANT_PREFILL = '{"action": "'
-
 # ---------------------------------------------------------------------------
 # CLAUDE CALL — copied verbatim from field_editor_agent.py by Dev 2
 # ---------------------------------------------------------------------------
@@ -526,7 +628,7 @@ def call_claude(
     cv_context: dict | None = None,
 ) -> dict:
     """
-    Call Claude for a single field edit using JSON schema + assistant prefill.
+    Call Claude for a single field edit using JSON schema.
 
     Returns a parsed dict with one of these shapes:
       {"action": "apply", "value": str}
@@ -549,26 +651,15 @@ def call_claude(
                     cv_context=cv_context,
                 ),
             },
-            # Prefill: forces the response to begin with '{"action": "'
-            # Claude continues from this exact string, so it cannot deviate
-            # from the JSON object format.
-            {
-                "role": "assistant",
-                "content": ASSISTANT_PREFILL,
-            },
         ],
     )
 
-    # Reassemble: Claude's continuation is appended to our prefill
-    continuation = raw.content[0].text
-    full_response = ASSISTANT_PREFILL + continuation
-
-    # Parse and validate
+    raw_text = strip_code_fences(raw.content[0].text)
     try:
-        parsed = json.loads(full_response)
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"Response was not valid JSON: {exc}\nRaw: {full_response!r}"
+            f"Response was not valid JSON: {exc}\nRaw: {raw_text!r}"
         ) from exc
 
     action = parsed.get("action")
@@ -643,6 +734,18 @@ def run_field_editor(
         field_path = resolve_paragraph_placeholder_path(mutated, raw_path, anchor_text)
         if field_path != raw_path:
             log.info("[Edit %d/%d] resolved path '%s' → '%s'", i, len(edits), raw_path, field_path)
+
+        # Fix II-B: redirect or skip edits targeting non-rendered project fields.
+        redirect_path, renderer_skip_reason = _check_renderer_field(field_path, donor)
+        if renderer_skip_reason:
+            log.info("  SKIPPED (non-rendered field) — %s", renderer_skip_reason)
+            skipped.append({"path": field_path, "reason": _truncate_reason(renderer_skip_reason)})
+            continue
+        if redirect_path:
+            log.info(
+                "  REDIRECTED (non-rendered field) '%s' → '%s'", field_path, redirect_path
+            )
+            field_path = redirect_path
 
         log.debug("[Edit %d/%d] path='%s'", i, len(edits), field_path)
         log.debug("  instruction: %s", instruction)

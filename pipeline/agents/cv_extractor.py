@@ -224,6 +224,29 @@ correction fully visible via extraction_warnings for human verification.
   rather than a start–end range.
 - Leave `major` as "" unless the CV lists it separately from the degree title.
 
+#### Degree-only routing rule
+``education[]`` is for degree-level qualifications ONLY. Route an entry to
+``education[]`` only if it is one of the following:
+- Bachelor's degree (BA, BSc, BEng, LLB, or equivalent)
+- Master's degree (MA, MSc, MEng, MBA, LLM, or equivalent)
+- Doctoral degree (PhD, DPhil, EdD, or equivalent)
+- Juris Doctor (JD) or professional law degree / bar diploma
+- Any equivalent formal multi-year degree (typically ≥ 3 years of full-time study)
+
+The following must NOT go to ``education[]`` — route them elsewhere:
+- Short courses (< 6 months): → ``training[]``
+- Seminars and workshops: → ``training[]``
+- International training programmes that do not award a formal degree: → ``training[]``
+- Certificate programmes under 6 months duration: → ``training[]``
+- Professional designations without a formal degree title (e.g. a CFA, PMP,
+  or chartered designation not tied to a multi-year university programme):
+  → ``certifications[]`` per the certifications dual-routing rule above
+
+When in doubt (e.g. a "Professional Diploma" or executive programme with
+ambiguous duration or awarding body), prefer ``certifications[]`` over
+``education[]`` and append an ``extraction_warnings`` entry noting the
+ambiguity.
+
 ### Language fields
 - Populate only the raw fields: `reading_raw`, `speaking_raw`, `writing_raw`.
 - Copy the proficiency level exactly as written in the CV, after whitespace
@@ -271,6 +294,16 @@ content type:
   memberships", "Memberships") → ``membership_professional_bodies`` (free text;
   join multiple entries with "; " if needed).
 
+#### Certifications dual-routing rule
+Formal professional credentials and chartered/registered engineering designations
+(e.g. Eur Ing, C Eng, PE, CEng, PEng, Pr Eng, or national equivalents) must be
+written to BOTH fields:
+  1. `certifications[]` — as a structured entry (the credential as the entry text).
+  2. `membership_professional_bodies` — retained in the free-text string.
+These fields serve different downstream purposes: `certifications[]` feeds
+Agent 4 KQ generation; `membership_professional_bodies` feeds the renderer directly.
+This rule applies regardless of which section label the source CV uses.
+
 If a single section contains a mix with no explicit label, prefer
 ``other_skills`` for courses, workshops, and non-formal credentials;
 prefer ``certifications`` for named certifications with awarding bodies.
@@ -280,6 +313,11 @@ If the source document has BOTH an "Other skills" section AND a
 the contents into one field.
 
 ### References
+- CITATION ROUTING: A section labelled "References", "Reference List", or
+  similar that contains CITATIONS (entries with author, title, journal/
+  conference, and year) must be routed to `publications[]`, NOT to
+  `references[]`. The `references[]` field (schema: name, title, organisation,
+  email, phone) is reserved exclusively for named CONTACT references.
 - If the CV contains a "References" or "Contacts" section with named individuals
   and contact details, extract each contact into a Reference entry.
 - Map fields as found in the source: `name`, `title`, `organisation`, `email`,

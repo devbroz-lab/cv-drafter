@@ -541,7 +541,8 @@ after A4, A5, A6 in `run_phase3` and `_run_compressor_and_halt`.
 ## Round 7 — Diagnostic Fixes Round 6 (May 2026)
 
 Implements Fix Z, Fix AA, Fix V, Fix W, Fix Y from `PIPELINE_DIAGNOSTIC_ROUND_6.md`.
-Fix S and Fix 4 threshold recalibration deferred to Round 8.
+Also includes Fix CC (employment-only fallback field mapping) aligned into Round 6 documentation.
+Fix S and Fix 4 threshold recalibration deferred to Round 7.
 
 ### Files changed
 
@@ -551,18 +552,148 @@ Fix S and Fix 4 threshold recalibration deferred to Round 8.
 | `pipeline/agents/fields_generator.py` | Fix AA: `SYSTEM_PROMPT_A4` minimum output guarantee extended with explicit `detailed_tasks` example and geographic exemption rule |
 | `pipeline/agents/cv_extractor.py` | Fix V: `### Merged-cell and two-column project tables` section in `SYSTEM_PROMPT_A1`; Fix W: `### Date ordering validation` section in `SYSTEM_PROMPT_A1` |
 | `pipeline/agents/tor_summarizer.py` | Fix Y: `### scoring_keywords` section moved to immediately after `### position_title`; non-empty guarantee added |
+| `pipeline/agents/cv_extractor.py` | Fix CC: `### Employment-only fallback (all formats)` section aligned to `description → main_project_features`; `employer → project_name + company`; `activities_performed / client / donor = ""`; warning wording aligned to `main_project_features` |
 | `pipeline/validators.py` | Fix Y: `check_tor_summarizer_warnings` function |
 | `pipeline/orchestrator.py` | Fix Y: `check_tor_summarizer_warnings` imported and wired in `run_phase1` after A2 |
 | `tests/test_compressor_text_cap.py` | **New file.** 12 tests for `_truncate_project_text_for_a6` |
 | `tests/test_fields_generator_prompt.py` | 2 new tests (`test_detailed_tasks_explicitly_mentioned`, `test_geographic_mismatch_does_not_exempt`) |
-| `tests/test_cv_extractor_prompt.py` | 6 new tests (`TestSystemPromptA1MergedCellExtraction`, `TestSystemPromptA1DateOrdering`) |
+| `tests/test_cv_extractor_prompt.py` | 8 new tests (`TestSystemPromptA1MergedCellExtraction`, `TestSystemPromptA1DateOrdering`, employment-fallback mapping markers) |
+| `tests/test_employment_fallback.py` | **New file.** 20 tests for `_apply_employment_fallback` mapping, warnings, and idempotence |
 | `tests/test_tor_summarizer_prompt.py` | 2 new tests (`test_scoring_keywords_section_position`, `test_scoring_keywords_non_empty_guarantee_present`) |
 | `tests/test_validators.py` | 6 new tests (`TestCheckTorSummarizerWarnings`) |
 | `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` | Status header, issue headings, fix table, sequence, round summary updated |
+| `additions/ISSUE_CC_CONTEXT.md` | Status and mapping semantics aligned to Round 6 (Fix CC) |
 | `additions/PIPELINE_DIAGNOSTIC_ROUND_6.md` | Status → Complete; planned → delivered; implementation record added |
 | `markdowns/PROMPT_REVIEW_CONTEXT.md` | 6 new rows + §7 quickref updated |
 | `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` | This section |
 | `markdowns/PIPELINE_CONTEXT.md` | A1 + Compressor rows updated |
 | `markdowns/RUNS_ARTIFACTS_CONTEXT.md` | `cv_data.json` + `tor_data.json` + `manifest.json` rows updated |
 
-**Total Round 7**: 17 files touched, 421/421 tests passing (28 new tests).
+**Total Round 7**: 19 files touched, 461/461 tests passing (48 new tests).
+
+---
+
+## Round 8 — Diagnostic Fixes Round 7 (May 2026)
+
+Implements Fix DD, EE, FF-A, FF-B, GG, HH, R7-5, II-A, II-B, JJ, KK, LL, MM from
+`PIPELINE_DIAGNOSTIC_ROUND_7.md`. Fix S and Fix 4 threshold recalibration deferred to Round 9.
+
+### Fix JJ — Remove A4 truncation-and-restore (redundant with current model)
+
+`pipeline/agents/fields_generator.py`: `_truncate_project_text_for_a4`,
+`_restore_truncated_project_text`, `A4_INPUT_PROJECT_WORD_CAP`, `_A4_CAPPED_FIELDS`,
+`cv_data_full` preservation, and the related `import logging` all removed. A4 now
+receives full untruncated project text directly from `mapped_cv.json`.
+
+### Fix KK — Remove A6 truncation entirely (silent data loss)
+
+`pipeline/agents/compressor.py`: `_truncate_project_text_for_a6`,
+`A6_INPUT_PROJECT_WORD_CAP`, `_A6_CAPPED_FIELDS`, all call sites, and all
+`input_field_truncated` manifest warning emissions removed. A6 receives full project
+text. `import copy` and truncation-related `append_warning` calls removed.
+
+### Fix LL — A6 donor-aware compression
+
+`pipeline/agents/compressor.py`: `run()` checks `manifest.params.donor`. For GIZ
+runs, a deep copy (`cv_data_for_a6`) is made with `activities_performed` cleared on
+all projects before word-count computation and the A6 LLM call. After the LLM
+returns, original `activities_performed` values are restored from `cv_data_in`.
+`SYSTEM_PROMPT_A6` updated with a note explaining GIZ field exclusion.
+
+### Fix EE — Post-cap chronological sort at mapper write-time
+
+`pipeline/agents/cv_tor_mapper.py`: `_parse_date` imported from
+`pipeline.precompute_utils`. `_date_sort_key` and `_sort_by_date_desc` helper
+functions added. Both `relevant_projects` and `countries_of_experience` sorted
+descending by `date_from` (tie-break: `date_to`) after `_enforce_threshold_and_cap`,
+before `CVData.model_validate`. Ensures WB `detailed_tasks[i]` ↔
+`relevant_projects[i]` positional pairing is stable for A4 and the WB renderer.
+
+### Fix II-A — WB renderer positional pairing documented
+
+`templates/wb.py`: comment added to `_build_context` on the `tasks_assigned`
+assembly loop documenting that position `i` of `detailed_tasks` corresponds to
+position `i` of `relevant_projects` and that correctness relies on Fix EE's
+sort being applied at mapper write-time.
+
+### Fix II-B — A7 renderer-aware field mapping
+
+`pipeline/agents/field_editor.py`:
+- `RENDERER_FIELD_MAP` dict: per-donor set of project-level fields that are
+  actually rendered (GIZ: `main_project_features`, `positions_held`; WB: adds
+  `activities_performed`).
+- `_RENDERER_REDIRECT_MAP` dict: field-level redirects (e.g.
+  `activities_performed` → `main_project_features` for GIZ).
+- `_check_renderer_field(field_key, donor)` function: returns `("render", ...)`
+  / `("redirect", target)` / `("skip", reason)`.
+- `run_field_editor()` calls `_check_renderer_field` after path resolution;
+  skips the LLM call and returns an explanatory message on `"skip"`.
+- `SYSTEM_PROMPT_A7` updated with `## DONOR-AWARE FIELD PATHS` section explaining
+  field redirection and skipping.
+
+### Fix DD — A1 prompt: citations routing
+
+`pipeline/agents/cv_extractor.py`: `SYSTEM_PROMPT_A1` updated — "References"
+sections containing academic citations (author, title, journal/year) route to
+`publications[]`; contact references (name, organisation, email/phone) route to
+`references[]`.
+
+### Fix FF-A — A1 prompt: certifications dual-routing
+
+`pipeline/agents/cv_extractor.py`: `SYSTEM_PROMPT_A1` updated — formal engineering
+or professional credentials (e.g. "Eur Ing", "C Eng") are dual-routed to both
+`certifications[]` and `membership_professional_bodies`.
+
+### Fix FF-B — A4 prompt: certifications as KQ evidence source
+
+`pipeline/agents/fields_generator.py`: `SYSTEM_PROMPT_A4` updated — `certifications[]`
+added to the evidence sources list for generating key qualification bullets.
+
+### Fix GG — GIZ education date duplication
+
+`templates/giz.py`: the `f"{institution} [{date_range}]"` string construction
+removed; `institution` now carries only the institution name. Single-year diploma
+fallback: if `date_from` is empty, it is filled from `date_obtained`.
+
+### Fix HH — GIZ renderer ampersand escaping
+
+`templates/giz.py`: `import html as _html` added; `_xml_str(s)` helper applies
+`html.escape()` to all string values before they are inserted into the Jinja2
+context dict. Covers education, language, skills, projects, identity, KQ bullets,
+publications, and reference sub-fields.
+
+### Fix R7-5 — GIZ education rows newest-first sort
+
+`templates/giz.py`: `_parse_date` imported from `pipeline.precompute_utils`;
+`_edu_date_sort_key()` helper added. Education list sorted descending by `date_to`
+(then `date_obtained`, then `date_from`) before processing in `_build_context`.
+
+### Fix MM — API warning endpoint
+
+`api/models/requests.py`: `WarningEntry` and `WarningsResponse` Pydantic models added.
+`api/routers/sessions.py`: `GET /sessions/{id}/warnings` endpoint added — aggregates
+`extraction_warnings` from `cv_data.json`, `alignment.warnings` from `mapped_cv.json`,
+`warnings` from `manifest.json`, and `generation_warnings` from `generated_fields.json`;
+returns a `WarningsResponse`.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `pipeline/agents/fields_generator.py` | Fix JJ: truncation helpers + constants removed |
+| `pipeline/agents/compressor.py` | Fix KK + LL: truncation removed; donor-aware exclusion added |
+| `pipeline/agents/cv_tor_mapper.py` | Fix EE: `_sort_by_date_desc` + `_date_sort_key` + `_parse_date` import |
+| `pipeline/agents/cv_extractor.py` | Fix DD + FF-A: `SYSTEM_PROMPT_A1` routing rules updated |
+| `pipeline/agents/field_editor.py` | Fix II-B: `RENDERER_FIELD_MAP`, `_RENDERER_REDIRECT_MAP`, `_check_renderer_field`, `SYSTEM_PROMPT_A7` update |
+| `templates/giz.py` | Fix GG + HH + R7-5: date duplication removed; `_xml_str` helper; education sort |
+| `templates/wb.py` | Fix II-A: positional pairing dependency comment added |
+| `api/models/requests.py` | Fix MM: `WarningEntry`, `WarningsResponse` models |
+| `api/routers/sessions.py` | Fix MM: `GET /sessions/{id}/warnings` endpoint |
+| `additions/PIPELINE_DIAGNOSTIC_ROUND_7.md` | Status → Complete; implementation record added |
+| `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` | Status header, fix table, sequence, round summary updated |
+| `markdowns/PROMPT_REVIEW_CONTEXT.md` | 10 new implementation rows; §7 quickref updated; §3 Fix LL note added |
+| `markdowns/PROMPT_REVIEW_IMPLEMENTATION.md` | This section |
+| `markdowns/PIPELINE_CONTEXT.md` | fields_generator + compressor rows updated; cv_tor_mapper Fix EE row added |
+| `markdowns/RUNS_ARTIFACTS_CONTEXT.md` | `mapped_cv.json` + `generated_fields.json` + `manifest.json` rows updated |
+
+**Total Round 8**: 15 files touched.

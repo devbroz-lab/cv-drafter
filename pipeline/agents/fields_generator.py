@@ -16,12 +16,9 @@ from pathlib import Path
 from anthropic import Anthropic
 
 import copy
-import logging
 
 from models import FORMAT_PROFILES, CVData
 from pipeline.config import ANTHROPIC_SYNTHESIS_MODEL
-
-log = logging.getLogger(__name__)
 from pipeline.manifest import update_step
 from pipeline.precompute_utils import compute_project_duration, compute_project_year
 from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
@@ -57,107 +54,6 @@ def _precompute_project_dates(cv_data: dict) -> dict:
             computed = compute_project_year(date_from, date_to)
             if computed:
                 project["year"] = computed
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Fix 8 Part 3: per-project text cap for A4 input
-# ---------------------------------------------------------------------------
-
-# Maximum words per field per project in the A4 user message.
-# Prevents token exhaustion from a small number of extremely dense projects
-# (e.g. Run 6 WB: one project had 694-word activities_performed).
-# The full text is preserved untouched in mapped_cv.json; only the A4
-# input copy is trimmed.
-A4_INPUT_PROJECT_WORD_CAP: int = 150
-
-# Fields capped per project.  Other project fields are never trimmed.
-_A4_CAPPED_FIELDS: tuple[str, ...] = ("activities_performed", "main_project_features")
-
-
-def _truncate_project_text_for_a4(cv_data: dict) -> dict:
-    """
-    Return a deep copy of ``cv_data`` with ``activities_performed`` and
-    ``main_project_features`` trimmed to at most ``A4_INPUT_PROJECT_WORD_CAP``
-    words per project.
-
-    Trimmed text is suffixed with ``"…"`` (U+2026) so Agent 4 can see that
-    the content was cut and avoid claiming completeness in its output.
-
-    Empty fields are left unchanged (no ``"…"`` is appended).
-    The original ``cv_data`` dict is never mutated.
-    The full text remains intact in ``mapped_cv.json`` on disk.
-    """
-    result = copy.deepcopy(cv_data)
-    for project in result.get("relevant_projects", []):
-        for field in _A4_CAPPED_FIELDS:
-            text = project.get(field, "") or ""
-            words = text.split()
-            if len(words) > A4_INPUT_PROJECT_WORD_CAP:
-                project[field] = " ".join(words[:A4_INPUT_PROJECT_WORD_CAP]) + "\u2026"
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Fix M Part 2: restore original project text after A4 returns
-# ---------------------------------------------------------------------------
-
-def _restore_truncated_project_text(
-    cv_data_out: dict,
-    original_cv_data: dict,
-) -> dict:
-    """
-    Restore ``activities_performed`` and ``main_project_features`` in
-    *cv_data_out* from *original_cv_data* for every project, matched by
-    list index.
-
-    Purpose
-    -------
-    ``_truncate_project_text_for_a4`` creates a truncated copy of ``cv_data``
-    for the A4 user-message input to prevent token exhaustion.  Agent 4 is
-    instructed not to modify already-populated fields, so it copies the
-    truncated text verbatim into its output.  This function restores the
-    original untruncated text from *original_cv_data* (pre-truncation source)
-    before the artifact is written to ``generated_fields.json``.
-
-    Restoration is unconditional per project — the original values are always
-    the source of truth regardless of whether A4 introduced the marker or not.
-
-    Parameters
-    ----------
-    cv_data_out : dict
-        The ``model_dump()`` result of A4's validated ``CVData`` output.
-    original_cv_data : dict
-        The ``cv_data`` dict as it existed *before* truncation was applied
-        (i.e. after ``_precompute_project_dates`` but before
-        ``_truncate_project_text_for_a4``).
-
-    Returns
-    -------
-    dict
-        A deep copy of *cv_data_out* with the capped fields restored from
-        *original_cv_data*.  Neither input is mutated.
-    """
-    result = copy.deepcopy(cv_data_out)
-    out_projects = result.get("relevant_projects", [])
-    orig_projects = original_cv_data.get("relevant_projects", [])
-
-    if len(out_projects) != len(orig_projects):
-        log.warning(
-            "_restore_truncated_project_text: A4 returned %d projects "
-            "but the original had %d. Skipping text restoration to avoid "
-            "index mismatch — review the A4 output for unexpected project "
-            "additions or removals.",
-            len(out_projects),
-            len(orig_projects),
-        )
-        return result
-
-    for i, proj in enumerate(out_projects):
-        for field in _A4_CAPPED_FIELDS:
-            if field in orig_projects[i]:
-                proj[field] = orig_projects[i][field]
 
     return result
 
@@ -315,20 +211,57 @@ or was newly synthesised.
   above — never return empty content). Maximum is 6.
 - Do not pad — a focused set of 2 strong bullets is better than 4 weak ones.
 
+#### Bullet style — noun/stat-led preference
+Strong preference (not a hard prohibition) for opening with a quantified noun
+phrase rather than an action verb:
+- Year-count: "X years of experience in…"
+- Measurable metric: "Led X projects across Y countries…"
+- Domain noun: "Extensive experience in energy policy…"
+
+Verb-led openings ("Delivered…", "Conducted…", "Designed…", "Drafted…") are
+not the preferred convention and should be avoided unless no credible noun
+phrase can be constructed from the available CV evidence.
+
+Exceptions where a verb is inherently the stronger framing are acceptable:
+"Appointed as…", "Elected to…", "Awarded…".
+
+#### Candidate-anchoring rule
+Each bullet must be grounded in evidence unique to this candidate. At least
+one candidate-specific detail must appear in every bullet:
+- An organisation name (employer, client, or donor)
+- A country or region of assignment
+- A measurable outcome (project count, team size, budget figure)
+- A role title held by this candidate
+- A named instrument, regulation, framework, or project
+
+A bullet that could apply to any expert with broadly similar experience
+against this ToR is insufficient. If you cannot anchor the bullet to a
+specific candidate detail, rewrite it using the closest available evidence
+from the CV and flag it in ``generation_warnings``.
+
+This rule applies to both GIZ (key_qualifications) and WB (detailed_tasks) formats.
+
 #### What each bullet must do
 - Address a specific requirement from the ToR (key_tasks, required_competencies,
   or sector_keywords).
 - Be grounded in the expert's actual experience — synthesise across multiple
   projects if needed, but never claim experience that has no basis in the CV.
-- Lead with an action verb.
+- Open with a noun/stat-led phrase (see Bullet style above). If using a verb,
+  prefer inherently strong ones (Appointed, Elected, Awarded).
 - Be one sentence, maximum 25 words.
 - Contain at least one sector keyword from DistilledToR.sector_keywords where
   naturally applicable.
+- Include at least one candidate-specific detail (see Candidate-anchoring rule).
 
 #### source field for each GeneratedField
 - "tor"        — bullet addresses a ToR requirement with no direct CV evidence
                  (use sparingly — flag in warnings if more than 1 such bullet)
-- "experience" — bullet is grounded in one or more CV projects or qualifications
+- "experience" — bullet is grounded in CV projects, qualifications, certifications,
+                 or training entries (a certifications[] entry OR a training[] entry
+                 matching a required_competency may ground a KQ bullet with
+                 source="experience"; apply editorial judgment — not every training
+                 entry warrants a bullet, surface only when directly relevant to a
+                 ToR required competency)
 - "generated"  — bullet synthesises both ToR requirement and CV evidence
 
 #### Ordering
@@ -442,16 +375,9 @@ def run(run_dir: Path) -> CVData:
     # empty values) but we skip it to avoid the redundant deepcopy on every run.
     # cv_data = _precompute_project_dates(cv_data)  ← now happens in cv_tor_mapper
 
-    # Fix M Part 2: preserve the pre-truncation copy so full text can be
-    # restored into the artifact after A4 returns.
-    cv_data_full = cv_data
-
-    # Fix 8 Part 3: trim activities_performed and main_project_features to
-    # A4_INPUT_PROJECT_WORD_CAP words per project.  Prevents token exhaustion
-    # from a small number of extremely dense projects (e.g. WB sessions with
-    # 600+ word activity descriptions).  mapped_cv.json is not affected.
-    # cv_data_full holds the untruncated source for the artifact write.
-    cv_data = _truncate_project_text_for_a4(cv_data)
+    # Fix JJ: per-project text truncation removed. claude-sonnet-4-6 has a 200k
+    # token context window and handles dense CV inputs without truncation risk.
+    # A4 now receives the full untruncated cv_data directly from mapped_cv.json.
 
     user_message = (
         f"<cv_data>\n{json.dumps(cv_data, indent=2)}\n</cv_data>\n\n"
@@ -485,13 +411,7 @@ def run(run_dir: Path) -> CVData:
             f"Fields Generator returned invalid output: {exc}\n\nRaw output:\n{raw}"
         ) from exc
 
-    # Fix M Part 2: restore original activities_performed / main_project_features
-    # from the pre-truncation cv_data_full into A4's output before writing the
-    # artifact.  This prevents the "…" truncation marker from leaking into
-    # generated_fields.json and being flagged by A5 as a coherence break.
-    generated_dict = _restore_truncated_project_text(
-        cv_data_out.model_dump(), cv_data_full
-    )
+    generated_dict = cv_data_out.model_dump()
 
     gf_path = run_dir / "generated_fields.json"
     existing = json.loads(gf_path.read_text(encoding="utf-8")) if gf_path.exists() else {}

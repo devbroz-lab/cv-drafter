@@ -264,6 +264,73 @@ def restore_protected_fields(
 
 
 # ---------------------------------------------------------------------------
+# Fix SS — collapse_by_date_range (Round 7.5)
+# ---------------------------------------------------------------------------
+
+
+def collapse_by_date_range(
+    entries: list[dict],
+    label_field: str,
+    date_from_field: str = "date_from",
+    date_to_field: str = "date_to",
+) -> list[dict]:
+    """Group entries by exact (date_from, date_to). Concatenate label_field
+    values alphabetically with ', '. Preserve first-occurrence order of groups.
+
+    Parameters
+    ----------
+    entries : list[dict]
+        List of dicts to collapse. Each must contain ``label_field``,
+        ``date_from_field``, and ``date_to_field``.
+    label_field : str
+        The field whose values are concatenated for rows sharing the same
+        date range. For ``countries_of_experience`` pass ``"country"``.
+    date_from_field : str
+        Name of the start-date field. Default ``"date_from"``.
+    date_to_field : str
+        Name of the end-date field. Default ``"date_to"``.
+
+    Returns
+    -------
+    list[dict]
+        Collapsed list. Rows with identical (date_from, date_to) pairs are
+        merged into a single row whose ``label_field`` is the alphabetically
+        sorted, comma-separated concatenation of all matching labels.
+        All other fields are taken from the first occurrence of each group.
+        Row ordering follows the first occurrence of each group in ``entries``.
+
+    Notes
+    -----
+    - Matching is exact on the raw string values — no fuzzy or date-parsed
+      comparison (Design decision 2 from PIPELINE_DIAGNOSTIC_ROUND_7.5.md).
+    - Ordering of the output list is controlled separately by Fix RR
+      (``_sort_by_date_desc`` with ``primary_key="date_to"``).
+    - General-purpose: importable by any future consumer (A7, other renderers,
+      additional table types).
+    """
+    groups: dict[tuple[str, str], tuple[dict, list[str]]] = {}
+    order: list[tuple[str, str]] = []
+
+    for entry in entries:
+        key = (entry.get(date_from_field, ""), entry.get(date_to_field, ""))
+        label = entry.get(label_field, "")
+        if key not in groups:
+            groups[key] = (dict(entry), [label])
+            order.append(key)
+        else:
+            groups[key][1].append(label)
+
+    result: list[dict] = []
+    for k in order:
+        representative, labels = groups[k]
+        collapsed = dict(representative)
+        collapsed[label_field] = ", ".join(sorted(labels))
+        result.append(collapsed)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Fix 4 — Python relevance scoring helpers (Round 5)
 # ---------------------------------------------------------------------------
 

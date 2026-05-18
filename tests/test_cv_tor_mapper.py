@@ -1,11 +1,15 @@
 """
-Tests for Fix J + Fix 8 Part 1 + Fix N + Fix 4 in pipeline/agents/cv_tor_mapper.py.
+Tests for Fix J + Fix 8 Part 1 + Fix N + Fix 4 + Fix PP-B + Fix RR in
+pipeline/agents/cv_tor_mapper.py.
 
 Fix J        — Python post-processing drops projects below the dynamic threshold.
 Fix 8 Part 1 — Python truncates the kept set to MAX_PROJECTS_TO_KEEP.
 Fix N        — Constants recalibrated; dynamic floor clamped to total.
 Fix 4        — Python relevance scoring via _precompute_relevance_scores;
                duration pre-compute moved upstream to cv_tor_mapper.
+Fix PP-A     — MIN=10, MAX=30 constants (Round 7.5).
+Fix PP-B     — _protect_current_role: restore dropped Present project after cap.
+Fix RR       — _sort_by_date_desc: primary_key="date_to" for countries.
 
 Tests use internal helpers directly. No LLM calls.
 """
@@ -21,6 +25,8 @@ from pipeline.agents.cv_tor_mapper import (
     _enforce_threshold_and_cap,
     _precompute_project_dates_for_mapper,
     _precompute_relevance_scores,
+    _protect_current_role,
+    _sort_by_date_desc,
 )
 
 
@@ -139,25 +145,32 @@ class TestThresholdEnforcement:
     def test_already_dropped_projects_not_touched_when_minimum_satisfied(self):
         """
         LLM-dropped projects stay False when the minimum guarantee is already
-        satisfied. Use 6 projects so effective_floor = min(MIN, 6) and
-        5 kept projects exceed it regardless of MIN value.
+        satisfied. With MIN=10, use 12 projects total (effective_floor=10) and
+        have 10 LLM-kept projects — floor is already met so the dropped one
+        stays dropped.
         """
         scores = [
-            _make_score("Kept1",   0.80, True),
-            _make_score("Kept2",   0.75, True),
-            _make_score("Kept3",   0.70, True),
-            _make_score("Kept4",   0.65, True),
-            _make_score("Kept5",   0.60, True),
-            _make_score("Dropped", 0.25, False),  # LLM already dropped this
+            _make_score("Kept1",  0.80, True),
+            _make_score("Kept2",  0.75, True),
+            _make_score("Kept3",  0.70, True),
+            _make_score("Kept4",  0.65, True),
+            _make_score("Kept5",  0.60, True),
+            _make_score("Kept6",  0.58, True),
+            _make_score("Kept7",  0.56, True),
+            _make_score("Kept8",  0.54, True),
+            _make_score("Kept9",  0.52, True),
+            _make_score("Kept10", 0.51, True),
+            _make_score("Dropped1", 0.25, False),  # LLM already dropped these
+            _make_score("Dropped2", 0.20, False),
         ]
         original = [{"project_name": s["project_name"]} for s in scores]
         parsed = {"data": {"relevant_projects": copy.deepcopy(original)},
                   "alignment": {"project_scores": copy.deepcopy(scores), "warnings": []}}
         _enforce_threshold_and_cap(parsed, original)
-        dropped = next(e for e in parsed["alignment"]["project_scores"]
-                       if e["project_name"] == "Dropped")
-        # 4 kept projects already satisfy floor=3; Dropped stays False
-        assert dropped["kept"] is False
+        dropped1 = next(e for e in parsed["alignment"]["project_scores"]
+                        if e["project_name"] == "Dropped1")
+        # 10 kept projects satisfy effective_floor=min(10, 12)=10; Dropped stays False
+        assert dropped1["kept"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +181,9 @@ class TestMinimumGuarantee:
     def test_restores_top_scoring_dropped_when_below_minimum(self):
         """
         When threshold enforcement drops all projects, the top-scoring ones
-        must be restored to meet effective_floor (= min(3, total=3) = 3).
-        New threshold for 3 projects (<=5) is 0.30, so scores below 0.30 drop.
+        must be restored to meet effective_floor (= min(10, total=3) = 3).
+        Threshold for 3 projects (<=5) is 0.30, so scores below 0.30 drop.
+        effective_floor clamps to 3 (total), so all three are restored.
         """
         scores = [
             _make_score("Best",   0.28, True),   # below 0.30 → dropped
@@ -182,7 +196,7 @@ class TestMinimumGuarantee:
         _enforce_threshold_and_cap(parsed, original)
 
         kept = [e for e in parsed["alignment"]["project_scores"] if e.get("kept")]
-        # effective_floor = min(3, 3) = 3 → all three restored
+        # effective_floor = min(10, 3) = 3 → all three restored
         assert len(kept) == 3
         names = {e["project_name"] for e in kept}
         assert "Best" in names
@@ -199,8 +213,8 @@ class TestMinimumGuarantee:
 
     def test_dynamic_floor_clamps_to_total(self):
         """
-        A CV with only 2 projects: effective_floor = min(3, 2) = 2.
-        All 2 projects are restored, never 3 (avoids infinite-loop hazard).
+        A CV with only 2 projects: effective_floor = min(10, 2) = 2.
+        All 2 projects are restored, never 10 (avoids restoring non-existent projects).
         """
         scores = [
             _make_score("P0", 0.25, True),   # below 0.30 → dropped
@@ -211,7 +225,7 @@ class TestMinimumGuarantee:
                   "alignment": {"project_scores": copy.deepcopy(scores), "warnings": []}}
         _enforce_threshold_and_cap(parsed, original)
         kept = [e for e in parsed["alignment"]["project_scores"] if e.get("kept")]
-        assert len(kept) == 2   # clamped to total, NOT to MIN_PROJECTS_TO_KEEP=3
+        assert len(kept) == 2   # clamped to total, NOT to MIN_PROJECTS_TO_KEEP=10
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +328,8 @@ class TestComposition:
         """
         Round 4 calibration: 24 total projects (threshold=0.50).
         10 above threshold, 8 LLM-kept below threshold (0.42–0.49), 6 LLM-dropped.
-        After enforcement: 10 survive threshold; cap=10 so no truncation.
+        After enforcement: 10 survive threshold; cap=30 so no truncation.
+        effective_floor=min(10,24)=10 = kept_count so minimum guarantee is a no-op.
         """
         # 10 above new 0.50 threshold
         high = [_make_score(f"High{i}", 0.55 + i * 0.01, True) for i in range(10)]
@@ -465,3 +480,173 @@ class TestSystemPromptA3JsonOnly:
 
     def test_first_char_rule_present(self):
         assert "FIRST non-whitespace" in SYSTEM_PROMPT_A3
+
+
+# ---------------------------------------------------------------------------
+# Fix PP-A — MIN/MAX constant values (Round 7.5)
+# ---------------------------------------------------------------------------
+
+class TestPPAConstants:
+    def test_min_projects_is_10(self):
+        assert MIN_PROJECTS_TO_KEEP == 10
+
+    def test_max_projects_is_30(self):
+        assert MAX_PROJECTS_TO_KEEP == 30
+
+
+# ---------------------------------------------------------------------------
+# Fix PP-B — _protect_current_role (Round 7.5)
+# ---------------------------------------------------------------------------
+
+def _make_full_parsed(scores: list[dict], original_projects: list[dict]) -> dict:
+    """Build a minimal parsed dict for _protect_current_role testing."""
+    kept_names = {s["project_name"] for s in scores if s.get("kept")}
+    return {
+        "data": {
+            "relevant_projects": [
+                p for p in original_projects if p.get("project_name", "") in kept_names
+            ]
+        },
+        "alignment": {
+            "project_scores": [copy.deepcopy(s) for s in scores],
+            "warnings": [],
+        },
+    }
+
+
+class TestProtectCurrentRole:
+    def _orig(self, name: str, date_from: str, date_to: str) -> dict:
+        return {"project_name": name, "date_from": date_from, "date_to": date_to}
+
+    def test_restores_dropped_present_project(self):
+        """A 'Present' project dropped by cap is unconditionally restored."""
+        scores = [
+            {"project_name": "CurrentRole", "relevance_score": 0.30, "kept": False},
+            {"project_name": "OldRole",     "relevance_score": 0.80, "kept": True},
+        ]
+        original = [
+            self._orig("CurrentRole", "January 2021", "Present"),
+            self._orig("OldRole",     "January 2015", "December 2020"),
+        ]
+        parsed = _make_full_parsed(scores, original)
+        _protect_current_role(parsed, original)
+
+        score_entry = next(e for e in parsed["alignment"]["project_scores"]
+                           if e["project_name"] == "CurrentRole")
+        assert score_entry["kept"] is True
+        proj_names = [p["project_name"] for p in parsed["data"]["relevant_projects"]]
+        assert "CurrentRole" in proj_names
+
+    def test_no_op_when_present_project_already_kept(self):
+        """If the 'Present' project was already kept, no change is made."""
+        scores = [
+            {"project_name": "CurrentRole", "relevance_score": 0.80, "kept": True},
+            {"project_name": "OldRole",     "relevance_score": 0.70, "kept": True},
+        ]
+        original = [
+            self._orig("CurrentRole", "January 2021", "Present"),
+            self._orig("OldRole",     "January 2015", "December 2020"),
+        ]
+        parsed = _make_full_parsed(scores, original)
+        _protect_current_role(parsed, original)
+
+        assert parsed["alignment"]["warnings"] == []
+
+    def test_no_op_when_no_present_projects(self):
+        """If no project has date_to = Present, nothing is changed."""
+        scores = [
+            {"project_name": "P1", "relevance_score": 0.20, "kept": False},
+        ]
+        original = [self._orig("P1", "2015", "2018")]
+        parsed = _make_full_parsed(scores, original)
+        _protect_current_role(parsed, original)
+
+        score_entry = parsed["alignment"]["project_scores"][0]
+        assert score_entry["kept"] is False
+        assert parsed["alignment"]["warnings"] == []
+
+    def test_picks_latest_date_from_among_multiple_present_projects(self):
+        """When multiple 'Present' projects are dropped, restore the latest date_from."""
+        scores = [
+            {"project_name": "Current2021", "relevance_score": 0.30, "kept": False},
+            {"project_name": "Current2018", "relevance_score": 0.35, "kept": False},
+            {"project_name": "OldRole",     "relevance_score": 0.80, "kept": True},
+        ]
+        original = [
+            self._orig("Current2021", "January 2021", "Present"),
+            self._orig("Current2018", "January 2018", "Present"),
+            self._orig("OldRole",     "January 2010", "December 2017"),
+        ]
+        parsed = _make_full_parsed(scores, original)
+        _protect_current_role(parsed, original)
+
+        # Only the most-recent "Present" project (2021) should be restored
+        current2021 = next(e for e in parsed["alignment"]["project_scores"]
+                           if e["project_name"] == "Current2021")
+        current2018 = next(e for e in parsed["alignment"]["project_scores"]
+                           if e["project_name"] == "Current2018")
+        assert current2021["kept"] is True
+        assert current2018["kept"] is False
+
+    def test_warning_emitted_when_project_restored(self):
+        scores = [
+            {"project_name": "CurrentRole", "relevance_score": 0.25, "kept": False},
+        ]
+        original = [self._orig("CurrentRole", "March 2022", "Present")]
+        parsed = _make_full_parsed(scores, original)
+        _protect_current_role(parsed, original)
+
+        warnings = parsed["alignment"]["warnings"]
+        assert len(warnings) == 1
+        assert "PP-B" in warnings[0]
+        assert "CurrentRole" in warnings[0]
+
+    def test_case_insensitive_present_detection(self):
+        """'ongoing' and 'current' (case-insensitive) also trigger protection."""
+        for date_to in ["ongoing", "PRESENT", "Current", "Ongoing"]:
+            scores = [{"project_name": "P", "relevance_score": 0.20, "kept": False}]
+            original = [self._orig("P", "2020", date_to)]
+            parsed = _make_full_parsed(scores, original)
+            _protect_current_role(parsed, original)
+            score = parsed["alignment"]["project_scores"][0]
+            assert score["kept"] is True, f"Failed for date_to='{date_to}'"
+
+
+# ---------------------------------------------------------------------------
+# Fix RR — _sort_by_date_desc primary_key="date_to" (Round 7.5)
+# ---------------------------------------------------------------------------
+
+class TestSortByDateDescRR:
+    def _country(self, name: str, date_from: str, date_to: str) -> dict:
+        return {"country": name, "date_from": date_from, "date_to": date_to}
+
+    def test_present_floats_to_top_with_date_to_sort(self):
+        """'Present' date_to sorts highest when primary_key='date_to'."""
+        countries = [
+            self._country("Kosovo", "January 1999", "Present"),
+            self._country("Albania", "January 2014", "December 2018"),
+            self._country("Serbia", "January 2010", "December 2013"),
+        ]
+        result = _sort_by_date_desc(countries, primary_key="date_to")
+        assert result[0]["country"] == "Kosovo"
+
+    def test_date_to_desc_ordering(self):
+        """Countries are ordered newest date_to first."""
+        countries = [
+            self._country("A", "2010", "2015"),
+            self._country("B", "2010", "2020"),
+            self._country("C", "2010", "2012"),
+        ]
+        result = _sort_by_date_desc(countries, primary_key="date_to")
+        assert result[0]["country"] == "B"
+        assert result[1]["country"] == "A"
+        assert result[2]["country"] == "C"
+
+    def test_projects_still_sort_by_date_from_default(self):
+        """Default primary_key='date_from' behaviour is unchanged for projects."""
+        projects = [
+            {"project_name": "Old", "date_from": "January 2010", "date_to": "December 2012"},
+            {"project_name": "New", "date_from": "January 2020", "date_to": "December 2021"},
+        ]
+        result = _sort_by_date_desc(projects)
+        assert result[0]["project_name"] == "New"
