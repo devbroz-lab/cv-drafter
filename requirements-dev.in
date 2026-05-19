@@ -1,0 +1,6 @@
+# Dev/test tooling — compile with:
+#   python -m piptools compile requirements-dev.in -o requirements-dev.txt --constraint requirements.txt
+
+pytest==8.3.5
+pytest-asyncio==0.24.0
+ruff==0.8.5

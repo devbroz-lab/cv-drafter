@@ -1,0 +1,21 @@
+# Direct runtime dependencies for cv-reformatter-backend.
+# Edit pyproject.toml and this file together, then run: pip-compile requirements.in
+-e .
+
+fastapi==0.115.12
+uvicorn[standard]==0.41.0
+pydantic==2.12.5
+email-validator==2.3.0
+pydantic-settings==2.13.1
+supabase==2.28.3
+httpx==0.28.1
+python-docx==1.2.0
+pypdf==6.10.2
+python-multipart==0.0.22
+PyJWT==2.12.1
+bcrypt==4.3.0
+google-auth==2.53.0
+anthropic==0.103.1
+docxtpl==0.20.2
+jinja2==3.1.6
+python-dotenv==1.2.2

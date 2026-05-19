@@ -1,0 +1,4 @@
+# Prevent Nixpacks from running a second pip install from requirements.txt
+# before railway.toml buildCommand (avoids mixed FastAPI/Pydantic versions).
+[variables]
+NIXPACKS_INSTALL_REQUIREMENTS = "false"

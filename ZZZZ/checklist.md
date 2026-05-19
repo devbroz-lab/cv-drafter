@@ -13,7 +13,7 @@
 - [ ] Write `api/config.py` — pydantic-settings for env vars + runtime Python version check enforcing 3.12.x **[CRITICAL]**
 - [ ] Write `api/server.py` — FastAPI app instance, mounts routers, adds CORS middleware, nothing else
 - [ ] Write `api/routers/health.py` — `GET /health → { status: ok }`, no auth required
-- [ ] Write `requirements.in` and compile `requirements.txt` — run `pip-compile requirements.in`, commit both files, never hand-edit `requirements.txt`
+- [x] Write `requirements.in` and compile `requirements.txt` — run `scripts/lock-deps.ps1` or `scripts/lock-deps.sh`, commit both files, never hand-edit `requirements.txt`
 - [ ] Verify server starts cleanly — `uvicorn api.server:app --reload` → `/health` returns 200 **[CRITICAL]**
 
 ---

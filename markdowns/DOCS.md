@@ -18,10 +18,16 @@
 
 ### 1. Set Up Environment
 ```bash
-cd /Users/qamarali/Desktop/backend
-source venv_312/bin/activate
+cd cv-drafter
+python -m venv .venv
+# Windows:  .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt   # optional
 uvicorn api.server:app --reload --host 127.0.0.1 --port 8000
 ```
+
+Python **3.12.13**; locked deps in `requirements.txt` (see [API.md](./API.md#dependencies) for the version table and lock workflow).
 
 ### 2. Test Health Endpoint
 ```bash

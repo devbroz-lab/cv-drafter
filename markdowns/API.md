@@ -9,12 +9,44 @@ The CV Reformatter API processes CVs through a 7-agent AI pipeline, producing fo
 
 ---
 
+## Dependencies
+
+**Python:** 3.12.13 (see `.python-version`)
+
+Install from the compiled lockfile so local and production use the same package versions:
+
+```bash
+cd cv-drafter
+python -m venv .venv
+# Windows:  .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt   # optional: pytest, ruff
+```
+
+| Package | Version |
+|---------|---------|
+| fastapi | 0.115.12 |
+| pydantic | 2.12.5 |
+| pydantic-settings | 2.13.1 |
+| uvicorn | 0.41.0 |
+| starlette | 0.46.2 |
+| supabase | 2.28.3 |
+| anthropic | 0.103.1 |
+
+Full transitive pins are in `requirements.txt` (generated from `requirements.in` via `pip-compile`).  
+To update dependencies: edit `pyproject.toml` and `requirements.in`, then run `scripts/lock-deps.ps1` (Windows) or `scripts/lock-deps.sh` (macOS/Linux), and commit both input and lock files.
+
+**Production (Railway):** `pip install -r requirements.txt` (see `railway.toml`). Redeploy with a cleared build cache after dependency changes.
+
+---
+
 ## Quick Start
 
 ### 1. Run the Server
 ```bash
-cd /Users/qamarali/Desktop/backend
-source venv_312/bin/activate
+cd cv-drafter
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 uvicorn api.server:app --reload --host 127.0.0.1 --port 8000
 ```
 

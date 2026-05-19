@@ -113,9 +113,11 @@ After session is `completed`:
 ## Environment Setup
 
 ```bash
-# Start the server
-cd /Users/qamarali/Desktop/backend
-source venv_312/bin/activate
+cd cv-drafter
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt  # optional: pytest, ruff
 uvicorn api.server:app --reload --host 127.0.0.1 --port 8000
 
 # In another terminal, test with curl
@@ -124,6 +126,8 @@ curl http://127.0.0.1:8000/health
 # Or use the Python client example
 python ZZZZ/api_client_example.py
 ```
+
+Dependencies are locked in `requirements.txt` (compiled from `requirements.in`). Do not hand-edit the lockfile; run `scripts/lock-deps.ps1` or `scripts/lock-deps.sh` after changing `pyproject.toml`.
 
 ---
 
@@ -148,6 +152,7 @@ python ZZZZ/api_client_example.py
 
 ## See Also
 
-- **Full API.md**: Complete endpoint documentation
-- **pyproject.toml**: Dependencies and scripts
+- **Full API.md**: Complete endpoint documentation (includes pinned dependency table)
+- **requirements.in** / **requirements.txt**: Direct deps and compiled lockfile
+- **pyproject.toml**: Project metadata and direct dependency pins
 - **CLAUDE.md**: Architecture and project overview
