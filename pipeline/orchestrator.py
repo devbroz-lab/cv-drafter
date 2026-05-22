@@ -163,7 +163,7 @@ async def run_phase1(
             f1.result()  # re-raises any exception from agent 1
             f2.result()  # re-raises any exception from agent 2
 
-        # Fix Y: soft-flag check after A2 for empty scoring_keywords
+        # R6-D: soft-flag check after A2 for empty scoring_keywords
         for w in check_tor_summarizer_warnings(run_dir):
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
@@ -244,7 +244,7 @@ async def run_phase3(*, session_id: str) -> None:
             set_failed(session_id, str(val_exc))
             return
 
-        # Fix 5b: soft-flag quality warnings after A4 (non-blocking)
+        # R5-D: soft-flag quality warnings after A4 (non-blocking)
         for w in check_fields_generator_warnings(run_dir):
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
@@ -258,7 +258,7 @@ async def run_phase3(*, session_id: str) -> None:
                     session_id,
                 )
 
-        # Fix 5b: soft-flag quality warnings after A5 (non-blocking)
+        # R5-D: soft-flag quality warnings after A5 (non-blocking)
         for w in check_content_reviewer_warnings(run_dir):
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
@@ -391,7 +391,7 @@ async def _run_compressor_and_halt(session_id: str, run_dir: Path) -> None:
         compression_ratio=cp["compression_ratio"],
     )
 
-    # Fix 5b: soft-flag quality warnings after A6 (non-blocking)
+    # R5-D: soft-flag quality warnings after A6 (non-blocking)
     for w in check_compressor_warnings(run_dir):
         log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
         append_warning(run_dir, **w)

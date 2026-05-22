@@ -1,9 +1,9 @@
 """
-Tests for Fix Z — per-project text cap in compressor.py.
+Tests for R6-E — per-project text cap in compressor.py.
 
 Mirrors the structure of tests/test_fields_generator_text_cap.py.
 
-Fix Z verifies:
+R6-E verifies:
   - activities_performed over cap is truncated to A6_INPUT_PROJECT_WORD_CAP
     words with a trailing "…" (U+2026).
   - main_project_features over cap is truncated.

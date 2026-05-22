@@ -7,10 +7,10 @@ Covers:
   - compute_project_duration
   - compute_project_year
   - restore_protected_fields
-  - keyword_overlap_score (Fix 4, Round 5)
-  - geography_score (Fix 4, Round 5)
-  - compute_composite_score (Fix 4, Round 5)
-  - collapse_by_date_range (Fix SS, Round 7.5)
+  - keyword_overlap_score (R5-B, Round 5)
+  - geography_score (R5-B, Round 5)
+  - compute_composite_score (R5-B, Round 5)
+  - collapse_by_date_range (R7.5-H, Round 7.5)
 """
 
 import datetime
@@ -257,7 +257,7 @@ class TestRestoreProtectedFields:
 
 
 # ---------------------------------------------------------------------------
-# keyword_overlap_score — Fix 4 (Round 5)
+# keyword_overlap_score — R5-B (Round 5)
 # ---------------------------------------------------------------------------
 
 class TestKeywordOverlapScore:
@@ -316,7 +316,7 @@ class TestKeywordOverlapScore:
 
 
 # ---------------------------------------------------------------------------
-# geography_score — Fix 4 (Round 5)
+# geography_score — R5-B (Round 5)
 # ---------------------------------------------------------------------------
 
 class TestGeographyScore:
@@ -360,7 +360,7 @@ class TestGeographyScore:
 
 
 # ---------------------------------------------------------------------------
-# compute_composite_score — Fix 4 (Round 5)
+# compute_composite_score — R5-B (Round 5)
 # ---------------------------------------------------------------------------
 
 class TestComputeCompositeScore:
@@ -384,7 +384,7 @@ class TestComputeCompositeScore:
 
 
 # ---------------------------------------------------------------------------
-# collapse_by_date_range — Fix SS (Round 7.5)
+# collapse_by_date_range — R7.5-H (Round 7.5)
 # ---------------------------------------------------------------------------
 
 def _country(name: str, date_from: str, date_to: str) -> dict:

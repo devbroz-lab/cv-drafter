@@ -3,10 +3,10 @@
 Status: **IMPLEMENTED Round 5** — `_precompute_relevance_scores` fully implemented.
 See `pipeline/agents/cv_tor_mapper.py` and `pipeline/precompute_utils.py`.
 
-**Round 4 addition**: Fix 4b extends this design to include keyword extraction
+**Round 4 addition**: R5-A extends this design to include keyword extraction
 at Agent 2 (ToR Summarizer). A2 will emit a `scoring_keywords` block into
 `tor_data.json` which feeds directly into the Python keyword overlap scorer
-below. Fix 4b and Fix 4 must be implemented in the same round. Fix 2 (all
+below. R5-A and R5-B must be implemented in the same round. R5-C (all
 agents to Sonnet) must also land in the same round — A2's role-implied keyword
 inference requires Sonnet-quality reasoning.
 
@@ -23,12 +23,12 @@ explanation rather than calculation.
 Additionally, the keyword set currently available to A3 is derived from whatever
 keywords appear in the ToR body — which may not fully represent the position's
 requirements. A role like "Energy Sector Regulatory Expert" implies a set of
-technical terms that may not be spelled out in the tasks list. Fix 4b addresses
+technical terms that may not be spelled out in the tasks list. R5-A addresses
 this by having A2 extract and infer a richer keyword set before A3 runs.
 
 ---
 
-## Fix 4b — A2 keyword extraction (new, Round 5)
+## R5-A — A2 keyword extraction (new, Round 5)
 
 ### What A2 will emit
 
@@ -54,13 +54,13 @@ A2's output (`tor_data.json`) will gain a `scoring_keywords` block:
 - `role_implied` — keywords inferred from the position title and pool name that
   a qualified candidate would be expected to demonstrate, even if not listed
   in the tasks body. This is a light generative inference step — requires
-  Sonnet-quality reasoning (hence Fix 2 dependency).
+  Sonnet-quality reasoning (hence R5-C dependency).
 - `scope_implied` — thematic areas and intervention types described in the
   project scope / background section of the ToR.
 - `explicit` — directly stated requirements: geography, years of experience,
   sector labels, donor-specific terminology.
 
-### How it feeds into Fix 4
+### How it feeds into R5-B
 
 The Python keyword scorer (`_keyword_score`) will consume the merged keyword
 set from all three lists. `role_implied` and `scope_implied` are weighted
@@ -89,7 +89,7 @@ A new `### Scoring keywords` section to be added to `SYSTEM_PROMPT_A2`:
 
 ---
 
-## Proposed interface (Fix 4)
+## Proposed interface (R5-B)
 
 `_precompute_relevance_scores(cv_data: dict, tor_data: dict) -> dict | None`
 
@@ -123,7 +123,7 @@ The prompt update instructs the LLM:
 
 ### 1. Sector keyword match (35% weight)
 
-With Fix 4b, `sector_keywords` is drawn from `tor_data["scoring_keywords"]`
+With R5-A, `sector_keywords` is drawn from `tor_data["scoring_keywords"]`
 (merged across all three lists) rather than from the tasks list alone.
 
 ```python
@@ -210,16 +210,16 @@ Use them as follows:
 
 ## Dependencies / blockers
 
-1. **Fix 4b must land first** — `scoring_keywords` must be present in
-   `tor_data.json` before Fix 4's keyword scorer can consume it. Both fixes
+1. **R5-A must land first** — `scoring_keywords` must be present in
+   `tor_data.json` before R5-B's keyword scorer can consume it. Both fixes
    should be implemented in the same round.
-2. **Fix 2 (Sonnet sweep) must land in the same round** — A2's role-implied
+2. **R5-C (Sonnet sweep) must land in the same round** — A2's role-implied
    keyword inference is a light generative step that requires Sonnet-quality
    reasoning. Haiku will produce shallow or generic `role_implied` lists.
 3. **No embedding API currently wired** — task/competency semantic matching
-   deferred. A bag-of-words approach via Fix 4b's keyword set partially
+   deferred. A bag-of-words approach via R5-A's keyword set partially
    compensates.
-4. **Threshold calibration after Fix 4** — Fix N's threshold constants
+4. **Threshold calibration after R5-B** — R4-A's threshold constants
    (`0.30 / 0.40 / 0.50`) are interim values. Once Python scoring produces
    consistent scores, recalibrate thresholds against production runs.
 5. **Regression testing required** — run a batch of existing sessions with

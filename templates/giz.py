@@ -62,7 +62,7 @@ def _xml_str(s: str) -> str:
     Escape XML special characters so values are safe for insertion into docx
     XML via docxtpl's string-based Jinja2 rendering.
 
-    Fix HH: docxtpl renders {{ variable }} by substituting the Python string
+    R7-F: docxtpl renders {{ variable }} by substituting the Python string
     directly into the OOXML source. If a value contains a bare '&', the
     resulting XML is invalid and the parser strips the character (confirmed in
     production runs: "Legal & Policy" -> "Legal  Policy"). html.escape() maps
@@ -91,7 +91,7 @@ def _build_context(cv: dict) -> dict:
     pi = cv.get("personal_info", {})
 
     # Education rows
-    # Fix R7-5: sort education entries newest-first before building rows.
+    # R7-G: sort education entries newest-first before building rows.
     # GIZ CV convention is most-recent qualification at the top.
     sorted_education = sorted(
         cv.get("education", []),
@@ -105,12 +105,12 @@ def _build_context(cv: dict) -> dict:
         date_to = edu.get("date_to", "").strip()
         date_obtained = edu.get("date_obtained", "").strip()
 
-        # Fix GG: do NOT append "[date_range]" to the institution cell — dates
+        # R7-E: do NOT append "[date_range]" to the institution cell — dates
         # are already rendered in the date_from / date_to columns by the dynamic
         # template. Appending them here produces double date display in the output.
         institution = edu.get("institution", "").strip()
 
-        # Fix GG edge case: single-year diploma where only date_obtained is
+        # R7-E edge case: single-year diploma where only date_obtained is
         # present. Write date_obtained into date_from so the template's
         # "{{ date_from }} – {{ date_to }}" substitution still renders something
         # in the date column rather than leaving it blank.
@@ -119,7 +119,7 @@ def _build_context(cv: dict) -> dict:
 
         education.append(
             {
-                # Fix HH: _xml_str escapes & -> &amp; so ampersands in institution
+                # R7-F: _xml_str escapes & -> &amp; so ampersands in institution
                 # names are not stripped by the docx XML parser.
                 "institution": _xml_str(institution),
                 "date_from": _xml_str(date_from),
@@ -147,14 +147,14 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
-    # Fix HH: _xml_str applied to joined strings so ampersands in skill names
+    # R7-F: _xml_str applied to joined strings so ampersands in skill names
     # are not stripped by the XML parser.
     other_skills_display = _xml_str(
         "; ".join(s.strip() for s in cv.get("other_skills", []) if s.strip())
     )
 
     # Key qualifications — prefer generated_fields over extracted list
-    # Fix HH: _xml_str escapes any '&' in bullet text.
+    # R7-F: _xml_str escapes any '&' in bullet text.
     generated_kq = [
         _xml_str(gf.get("content", "").strip())
         for gf in cv.get("generated_fields", [])
@@ -183,7 +183,7 @@ def _build_context(cv: dict) -> dict:
         )
 
     # Relevant projects rows
-    # Fix HH: _xml_str applied to all string fields so ampersands in project
+    # R7-F: _xml_str applied to all string fields so ampersands in project
     # names, client names, locations, etc. are not stripped by the XML parser.
     relevant_projects = []
     for proj in cv.get("relevant_projects", []):
@@ -203,7 +203,7 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
-    # Fix HH: _xml_str applied to all string values in the context dict.
+    # R7-F: _xml_str applied to all string values in the context dict.
     # docxtpl renders {{ variable }} by string-substituting into OOXML; bare
     # '&' characters would produce invalid XML and get stripped by the parser.
     nat1 = pi.get("nationality", "").strip()

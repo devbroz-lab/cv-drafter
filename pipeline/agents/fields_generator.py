@@ -369,13 +369,13 @@ def run(run_dir: Path) -> CVData:
     format_profile = FORMAT_PROFILES[donor]
 
     # P15/P2-A4 — NOTE (Round 5): duration and year pre-compute was moved upstream
-    # to cv_tor_mapper.run() (Fix 4) so A3's LLM sees populated duration values.
+    # to cv_tor_mapper.run() (R5-B) so A3's LLM sees populated duration values.
     # The pre-fill is therefore already applied before this point; calling
     # _precompute_project_dates here again would be a no-op (it only fills
     # empty values) but we skip it to avoid the redundant deepcopy on every run.
     # cv_data = _precompute_project_dates(cv_data)  ← now happens in cv_tor_mapper
 
-    # Fix JJ: per-project text truncation removed. claude-sonnet-4-6 has a 200k
+    # R7-J: per-project text truncation removed. claude-sonnet-4-6 has a 200k
     # token context window and handles dense CV inputs without truncation risk.
     # A4 now receives the full untruncated cv_data directly from mapped_cv.json.
 

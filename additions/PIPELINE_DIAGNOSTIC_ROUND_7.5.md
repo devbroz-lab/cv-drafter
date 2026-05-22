@@ -12,15 +12,15 @@ further rounds.
 
 | Fix | File(s) changed | Summary |
 |-----|-----------------|---------|
-| Fix PP-B | `pipeline/agents/cv_tor_mapper.py` | Added `_protect_current_role` helper; wired into `run()` after `_enforce_threshold_and_cap`. Unconditionally restores the most-recent `date_to="Present"` project dropped by cap enforcement. |
-| Fix RR | `pipeline/agents/cv_tor_mapper.py` | Extended `_sort_by_date_desc` with `primary_key` argument; `countries_of_experience` now sorted by `date_to` descending so ongoing assignments float to top. |
-| Fix SS | `pipeline/precompute_utils.py`, `pipeline/agents/cv_tor_mapper.py` | Added `collapse_by_date_range` general-purpose utility; called at mapper write-time to collapse `countries_of_experience` rows sharing identical `(date_from, date_to)` pairs into single alphabetically-concatenated rows. |
-| Fix PP-A | `pipeline/agents/cv_tor_mapper.py` | Raised `MIN_PROJECTS_TO_KEEP` 5→10, `MAX_PROJECTS_TO_KEEP` 15→30. Extended A3 `SYSTEM_PROMPT` with transferable-competency tolerance for sector keyword scoring. |
-| Fix TT | `templates/giz.py` | Changed dual-nationality separator from `" / "` to `" and "` in `_build_context`. |
-| Fix NN | `pipeline/agents/content_reviewer.py` | Added `## Style-check scope` section to `SYSTEM_PROMPT_A5`; restricted style/passive-voice checks to `generated_fields[*].content` only; updated `### relevant_projects` review scope to factual issues only. |
-| Fix OO | `pipeline/agents/fields_generator.py` | Added `#### Bullet style — noun/stat-led preference` and `#### Candidate-anchoring rule` subsections to `SYSTEM_PROMPT_A4` GIZ `key_qualifications` section. Applies to both GIZ and WB formats. |
-| Fix QQ-A | `pipeline/agents/cv_extractor.py` | Added `#### Degree-only routing rule` to `### Education` in `SYSTEM_PROMPT_A1`; non-degree entries (short courses, seminars, training programmes) explicitly routed to `training[]`. |
-| Fix QQ-B | `pipeline/agents/fields_generator.py` | Added `training[]` alongside `certifications[]` as allowed KQ bullet evidence source in `SYSTEM_PROMPT_A4`. Editorial judgment applies — selective surfacing only. |
+| R7.5-D | `pipeline/agents/cv_tor_mapper.py` | Added `_protect_current_role` helper; wired into `run()` after `_enforce_threshold_and_cap`. Unconditionally restores the most-recent `date_to="Present"` project dropped by cap enforcement. |
+| R7.5-G | `pipeline/agents/cv_tor_mapper.py` | Extended `_sort_by_date_desc` with `primary_key` argument; `countries_of_experience` now sorted by `date_to` descending so ongoing assignments float to top. |
+| R7.5-H | `pipeline/precompute_utils.py`, `pipeline/agents/cv_tor_mapper.py` | Added `collapse_by_date_range` general-purpose utility; called at mapper write-time to collapse `countries_of_experience` rows sharing identical `(date_from, date_to)` pairs into single alphabetically-concatenated rows. |
+| R7.5-C | `pipeline/agents/cv_tor_mapper.py` | Raised `MIN_PROJECTS_TO_KEEP` 5→10, `MAX_PROJECTS_TO_KEEP` 15→30. Extended A3 `SYSTEM_PROMPT` with transferable-competency tolerance for sector keyword scoring. |
+| R7.5-I | `templates/giz.py` | Changed dual-nationality separator from `" / "` to `" and "` in `_build_context`. |
+| R7.5-A | `pipeline/agents/content_reviewer.py` | Added `## Style-check scope` section to `SYSTEM_PROMPT_A5`; restricted style/passive-voice checks to `generated_fields[*].content` only; updated `### relevant_projects` review scope to factual issues only. |
+| R7.5-B | `pipeline/agents/fields_generator.py` | Added `#### Bullet style — noun/stat-led preference` and `#### Candidate-anchoring rule` subsections to `SYSTEM_PROMPT_A4` GIZ `key_qualifications` section. Applies to both GIZ and WB formats. |
+| R7.5-E | `pipeline/agents/cv_extractor.py` | Added `#### Degree-only routing rule` to `### Education` in `SYSTEM_PROMPT_A1`; non-degree entries (short courses, seminars, training programmes) explicitly routed to `training[]`. |
+| R7.5-F | `pipeline/agents/fields_generator.py` | Added `training[]` alongside `certifications[]` as allowed KQ bullet evidence source in `SYSTEM_PROMPT_A4`. Editorial judgment applies — selective surfacing only. |
 
 ---
 
@@ -42,21 +42,21 @@ Runs 2, 3, and 4.
 
 ## Issues identified and closed without fix
 
-### Issue R7.5-D — Fix DD not working for Hadjicostas publications — CLOSED
+### Issue R7.5-D — R7-A not working for Hadjicostas publications — CLOSED
 
 Suspected: publications section not extracted for Hadjicostas (Run 2). Confirmed
 after inspecting source CV: paragraph [18] reads verbatim "Other relevant
 information (e.g. publications): Several articles published / presented at
 international journals and conferences." There are no individual citation entries
 anywhere in the document. The pipeline correctly extracted this single-line vague
-statement. Fix DD is working — this is a sparse source document, not a pipeline
+statement. R7-A is working — this is a sparse source document, not a pipeline
 failure.
 
 ### Issue R7.5-G — Language proficiency over-upgraded by CEFR mapping — CLOSED
 
 Suspected: Stojadinovic (Run 3) language table shows C2 for all languages including
 secondary languages where human editor used C1. Source CV confirmed: language table
-uses numeric `1` for all skills with no directional header. Fix O's
+uses numeric `1` for all skills with no directional header. R4-B's
 `language_scale_direction` detection has nothing to anchor to, defaults to
 `1_best`, maps `1 → C2` for all. Known limitation of numeric-only scales without
 directional context — not a fixable bug. Human editorial judgment (C2 vs C1 for
@@ -85,7 +85,7 @@ style of raw source material. These flags inflate the issue count, push runs ove
 the `high_severity_count_unusual` threshold, and give the recruiter a bloated
 review list including items they cannot meaningfully act on.
 
-**Fix NN** — `SYSTEM_PROMPT_A5` in `pipeline/agents/content_reviewer.py`.
+**R7.5-A** — `SYSTEM_PROMPT_A5` in `pipeline/agents/content_reviewer.py`.
 Prompt-only.
 
 **Planned change**: Add explicit scope restriction — style and language quality
@@ -113,7 +113,7 @@ same ToR — A4 is over-indexing on ToR requirements and under-differentiating o
 candidate-specific evidence. A bullet that could apply to any regulatory expert
 against this ToR is insufficiently grounded.
 
-**Fix OO** — `SYSTEM_PROMPT_A4` in `pipeline/agents/fields_generator.py`.
+**R7.5-B** — `SYSTEM_PROMPT_A4` in `pipeline/agents/fields_generator.py`.
 Prompt-only. Applies to both GIZ and WB formats.
 
 **Planned change**: Add two rules to the KQ bullet generation instruction:
@@ -142,7 +142,7 @@ its geography does not match the ToR. Kostari's Power Central Asia project
 despite being the candidate's active current role. Human editors always include the
 current role regardless of geographic fit.
 
-**Fix PP-A** — `SYSTEM_PROMPT_A3` in `pipeline/agents/cv_tor_mapper.py`.
+**R7.5-C** — `SYSTEM_PROMPT_A3` in `pipeline/agents/cv_tor_mapper.py`.
 Prompt + Python.
 
 **Planned change**: Broaden A3's keyword scoring tolerance — instruct A3 to
@@ -156,14 +156,14 @@ keyword match. Also raise Python thresholds:
 Note: a formula tying these thresholds to `page_limit` is planned for a future
 round once a larger sample size is available and renderer templates are stable.
 
-**Fix PP-B** — `pipeline/agents/cv_tor_mapper.py`. Python-only.
+**R7.5-D** — `pipeline/agents/cv_tor_mapper.py`. Python-only.
 
 **Planned change**: After `_enforce_threshold_and_cap` and the minimum-guarantee
 restore, add a `_protect_current_role` step. This step checks whether any project
 with `date_to = "Present"` (case-insensitive) was dropped during threshold/cap
 enforcement. If so, restore it unconditionally to the kept list — regardless of
 relevance score — before writing `mapped_cv.json`. If multiple "Present" projects
-exist, protect the one with the latest `date_from`. This runs before the Fix EE
+exist, protect the one with the latest `date_from`. This runs before the R7-B
 sort so the restored project is correctly ordered.
 
 ---
@@ -175,7 +175,7 @@ training programs, and language university entries in GIZ Table 1 alongside degr
 qualifications. Human editors retain only degree-level qualifications in the
 education table.
 
-**Fix QQ-A** — `SYSTEM_PROMPT_A1` in `pipeline/agents/cv_extractor.py`.
+**R7.5-E** — `SYSTEM_PROMPT_A1` in `pipeline/agents/cv_extractor.py`.
 Prompt-only.
 
 **Planned change**: Add explicit routing rule — `education[]` is for degree-level
@@ -183,13 +183,13 @@ qualifications only: Bachelor, Master, PhD, LLB, Juris Doctor, professional law 
 bar diplomas, and equivalent formal multi-year degrees. Short courses, seminars,
 workshops, international training programs, and certificate programs under 6 months
 duration go to `training[]` instead. Edge cases (e.g. professional designations
-without a degree title) go to `certifications[]` per Fix FF-A rules.
+without a degree title) go to `certifications[]` per R7-C rules.
 
-**Fix QQ-B** — `SYSTEM_PROMPT_A4` in `pipeline/agents/fields_generator.py`.
+**R7.5-F** — `SYSTEM_PROMPT_A4` in `pipeline/agents/fields_generator.py`.
 Prompt-only.
 
 **Planned change**: Add `training[]` to the allowed evidence sources for KQ bullet
-generation, alongside `certifications[]` (Fix FF-B). A4 may draw from `training[]`
+generation, alongside `certifications[]` (R7-D). A4 may draw from `training[]`
 when a training entry is directly relevant to a ToR required competency and worth
 surfacing as a KQ bullet. Same `source="experience"` tagging applies. A4 applies
 editorial judgment — not every training entry warrants a bullet. This keeps A1 as
@@ -198,18 +198,18 @@ a pure extractor and places judgment where it belongs: in A4.
 **Design decision**: Alternative 3 chosen over appending training entries to
 `key_qualifications[]` at A1 time. A1 appending is mechanical and risks inflating
 KQ with weak seminar-citation entries. A4 drawing from `training[]` is selective
-and mirrors the existing Fix FF-B pattern for `certifications[]`.
+and mirrors the existing R7-D pattern for `certifications[]`.
 
 ---
 
-### Issue R7.5-H — Fix EE bug: `countries_of_experience` sorted by wrong key
+### Issue R7.5-H — R7-B bug: `countries_of_experience` sorted by wrong key
 
 **Observed**: Run 4 (Kostari). Kosovo (01/1999–present) should appear first as the
-ongoing assignment but appears third because Fix EE sorts by `date_from` descending,
+ongoing assignment but appears third because R7-B sorts by `date_from` descending,
 placing 1999 last. Ongoing assignments (`date_to = "Present"`) should always float
 to the top.
 
-**Fix RR** — `pipeline/agents/cv_tor_mapper.py`. Python-only. One-line sort key
+**R7.5-G** — `pipeline/agents/cv_tor_mapper.py`. Python-only. One-line sort key
 change.
 
 **Planned change**: Change the sort key for `countries_of_experience` from
@@ -228,7 +228,7 @@ Macedonia, Kosovo, Montenegro, Moldova | 2014 – 2018"). Pipeline renders one r
 per country entry. This wastes table space and diverges from human editorial
 convention.
 
-**Fix SS** — `pipeline/precompute_utils.py` (new general function) +
+**R7.5-H** — `pipeline/precompute_utils.py` (new general function) +
 `pipeline/agents/cv_tor_mapper.py` (call site). Python-only.
 
 **Planned change**:
@@ -237,7 +237,7 @@ Add `collapse_by_date_range(entries, country_field, date_from_field,
 date_to_field)` to `precompute_utils.py`:
 - Groups entries by exact `(date_from, date_to)` pair — no fuzzy matching.
 - For each group, concatenates country values alphabetically, comma-separated.
-- Returns the collapsed list. Ordering handled separately by Fix RR.
+- Returns the collapsed list. Ordering handled separately by R7.5-G.
 - General-purpose and importable by any future consumer (A7, other renderers,
   additional table types as identified).
 
@@ -245,10 +245,10 @@ Applied in `cv_tor_mapper.py` post-processing in this sequence:
 
 ```
 1. _enforce_threshold_and_cap      → kept projects
-2. _protect_current_role           → restore dropped current role (Fix PP-B)
-3. sort relevant_projects          → newest-first by date_from desc (Fix EE)
-4. collapse_by_date_range          → collapse countries_of_experience (Fix SS)
-5. sort countries_of_experience    → ongoing-first by date_to desc (Fix RR)
+2. _protect_current_role           → restore dropped current role (R7.5-D)
+3. sort relevant_projects          → newest-first by date_from desc (R7-B)
+4. collapse_by_date_range          → collapse countries_of_experience (R7.5-H)
+5. sort countries_of_experience    → ongoing-first by date_to desc (R7.5-G)
 6. write mapped_cv.json
 ```
 
@@ -268,7 +268,7 @@ pairs. Deterministic and avoids incorrect merging of genuinely different periods
 Republic of Kosovo". Pipeline renders "Republic of Montenegro / Republic of Kosovo"
 using the `" / "` separator in `giz.py` `_build_context`.
 
-**Fix TT** — `templates/giz.py` `_build_context`. Python-only. One-line change.
+**R7.5-I** — `templates/giz.py` `_build_context`. Python-only. One-line change.
 
 **Planned change**:
 ```python
@@ -288,50 +288,50 @@ of nationality name formatting. WB renderer unaffected — it uses
 
 | File | Planned change |
 |------|---------------|
-| `pipeline/agents/content_reviewer.py` | Fix NN: restrict style checks to generated fields only |
-| `pipeline/agents/fields_generator.py` | Fix OO: noun/stat-led KQ style + candidate-anchoring; Fix QQ-B: `training[]` as KQ evidence source |
-| `pipeline/agents/cv_tor_mapper.py` | Fix PP-A: broaden A3 tolerance + raise MIN/MAX; Fix PP-B: protect current role; Fix RR: `countries_of_experience` sort by `date_to`; Fix SS call site |
-| `pipeline/agents/cv_extractor.py` | Fix QQ-A: degree-only routing for `education[]` |
-| `pipeline/precompute_utils.py` | Fix SS: `collapse_by_date_range` general utility function |
-| `templates/giz.py` | Fix TT: dual nationality " and " separator |
+| `pipeline/agents/content_reviewer.py` | R7.5-A: restrict style checks to generated fields only |
+| `pipeline/agents/fields_generator.py` | R7.5-B: noun/stat-led KQ style + candidate-anchoring; R7.5-F: `training[]` as KQ evidence source |
+| `pipeline/agents/cv_tor_mapper.py` | R7.5-C: broaden A3 tolerance + raise MIN/MAX; R7.5-D: protect current role; R7.5-G: `countries_of_experience` sort by `date_to`; R7.5-H call site |
+| `pipeline/agents/cv_extractor.py` | R7.5-E: degree-only routing for `education[]` |
+| `pipeline/precompute_utils.py` | R7.5-H: `collapse_by_date_range` general utility function |
+| `templates/giz.py` | R7.5-I: dual nationality " and " separator |
 
 ---
 
 ## Implementation sequence
 
-1. Fix PP-B — Protect current role (highest correctness priority)
-2. Fix RR — `countries_of_experience` sort key bug (unblocks Fix SS)
-3. Fix SS — `collapse_by_date_range` utility + call site
-4. Fix PP-A — Broaden A3 tolerance + raise MIN/MAX thresholds
-5. Fix TT — GIZ dual nationality separator (one-line)
-6. Fix NN — A5 style check scope restriction (prompt)
-7. Fix OO — A4 KQ bullet style + candidate-anchoring (prompt)
-8. Fix QQ-A — A1 education routing (prompt)
-9. Fix QQ-B — A4 `training[]` as KQ source (prompt)
+1. R7.5-D — Protect current role (highest correctness priority)
+2. R7.5-G — `countries_of_experience` sort key bug (unblocks R7.5-H)
+3. R7.5-H — `collapse_by_date_range` utility + call site
+4. R7.5-C — Broaden A3 tolerance + raise MIN/MAX thresholds
+5. R7.5-I — GIZ dual nationality separator (one-line)
+6. R7.5-A — A5 style check scope restriction (prompt)
+7. R7.5-B — A4 KQ bullet style + candidate-anchoring (prompt)
+8. R7.5-E — A1 education routing (prompt)
+9. R7.5-F — A4 `training[]` as KQ source (prompt)
 
 ---
 
 ## Design decisions
 
-1. **Fix SS placement**: `collapse_by_date_range` applied at mapper write-time
+1. **R7.5-H placement**: `collapse_by_date_range` applied at mapper write-time
    (Option A over Option B renderer-time). Single source of truth for both renderer
    and A7. A3 geography scoring unaffected — runs before this step.
 
-2. **Fix SS matching**: Exact `(date_from, date_to)` pair match only. No fuzzy
+2. **R7.5-H matching**: Exact `(date_from, date_to)` pair match only. No fuzzy
    window. Deterministic, avoids incorrect merging of genuinely different periods.
 
-3. **Fix QQ design**: Alternative 3 chosen — A1 routes non-degree entries to
+3. **R7.5-E/F design**: Alternative 3 chosen — A1 routes non-degree entries to
    `training[]` (pure extraction); A4 draws from `training[]` selectively when
-   generating KQ bullets (editorial judgment). Mirrors Fix FF-B pattern for
+   generating KQ bullets (editorial judgment). Mirrors R7-D pattern for
    `certifications[]`. Rejected: (A) accept the loss; (B) render `training[]` in
    GIZ template; (D) A1 appends credential-bearing entries to `key_qualifications[]`.
 
-4. **Fix PP thresholds**: `MIN=10`, `MAX=30` as interim values. Formula tying to
+4. **R7.5-C/D thresholds**: `MIN=10`, `MAX=30` as interim values. Formula tying to
    `page_limit` deferred until larger sample size available and renderer templates
    stable.
 
-5. **Fix OO scope**: Strong preference (not hard prohibition) for noun/stat-led KQ
+5. **R7.5-B scope**: Strong preference (not hard prohibition) for noun/stat-led KQ
    bullets applies to both GIZ and WB formats unconditionally — general CV best
    practice. Exceptions: "Appointed as...", "Elected to..." remain acceptable.
 
-6. **Fix TT scope**: GIZ-only. WB renderer unaffected.
+6. **R7.5-I scope**: GIZ-only. WB renderer unaffected.

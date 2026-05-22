@@ -1195,7 +1195,7 @@ async def get_warnings(
       - manifest.json       → warnings[]              (orchestrator-level warnings)
       - generated_fields.json → generation_warnings[] (Agent 4/6 generation issues)
 
-    Fix MM: these warning lists were previously written to disk but never
+    R7-M: these warning lists were previously written to disk but never
     transmitted to the frontend. This endpoint is additive — no existing
     response shapes are modified.
     """

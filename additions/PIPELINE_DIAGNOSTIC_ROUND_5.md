@@ -8,7 +8,7 @@
 
 ## Fixes delivered
 
-### Fix U — A1 unfilled placeholder detection
+### R5-E — A1 unfilled placeholder detection
 
 **Problem**: Round 4 Run 3 — source CV contains `"More than X years experience as
 Team Leader"` where `X` is a literal unfilled placeholder. A1 extracted it verbatim.
@@ -26,10 +26,10 @@ gaps (`__ years`). Explicit exclusion of intentional uses (X-ray, HIV/AIDS, etc.
 
 ---
 
-### Fix 2 — Upgrade all remaining agents to Sonnet
+### R5-C — Upgrade all remaining agents to Sonnet
 
 **Problem**: A1–A3, A5, A6 still used Haiku (`ANTHROPIC_MODEL`). A2's role-implied
-keyword inference (Fix 4b) requires Sonnet-quality reasoning. A3 and A5 also
+keyword inference (R5-A) requires Sonnet-quality reasoning. A3 and A5 also
 benefit from Sonnet's stronger reasoning for scoring and review tasks.
 
 **Scope**: Single constant in `pipeline/config.py`.
@@ -42,9 +42,9 @@ own `MODEL` constant (unchanged).
 
 ---
 
-### Fix 4b — A2 `scoring_keywords` extraction
+### R5-A — A2 `scoring_keywords` extraction
 
-**Problem**: Fix 4's Python relevance scorer needed a richer keyword set than what
+**Problem**: R5-B's Python relevance scorer needed a richer keyword set than what
 `sector_keywords` alone provides. The position title implies technical vocabulary
 that often does not appear in the tasks list. A2 on Sonnet can infer this.
 
@@ -68,7 +68,7 @@ field) and `SYSTEM_PROMPT_A2` in `pipeline/agents/tor_summarizer.py`.
 
 ---
 
-### Fix 4 — Python relevance scoring for Agent 3 + duration upstream
+### R5-B — Python relevance scoring for Agent 3 + duration upstream
 
 **Problem**: A3's scoring was entirely LLM-side and inconsistent. The
 `_precompute_relevance_scores` stub returned `None`. A3's LLM scored projects with no
@@ -105,7 +105,7 @@ field) and `SYSTEM_PROMPT_A2` in `pipeline/agents/tor_summarizer.py`.
 
 ---
 
-### Fix 5b — Soft-flag manifest warnings
+### R5-D — Soft-flag manifest warnings
 
 **Problem**: Remaining semantic validation gaps: A5→A6 review block check,
 A6→renderer compression block check. Also quality-concern flags for high
@@ -144,24 +144,24 @@ No router change required (manifest is already returned verbatim).
 
 | File | Change |
 |------|--------|
-| `pipeline/config.py` | `ANTHROPIC_MODEL` → `claude-sonnet-4-20250514` (Fix 2) |
-| `pipeline/agents/cv_extractor.py` | `SYSTEM_PROMPT_A1`: `### Unfilled placeholder detection` section (Fix U) |
-| `pipeline/agents/tor_summarizer.py` | `SYSTEM_PROMPT_A2`: `### Scoring keywords` section (Fix 4b) |
-| `pipeline/agents/cv_tor_mapper.py` | `_precompute_project_dates_for_mapper`; `_precompute_relevance_scores` real impl; `run()` upstream duration + scoring; `SYSTEM_PROMPT_A3` pre-computed scores section. New imports from `precompute_utils`. (Fix 4 + Fix 4b) |
-| `pipeline/agents/fields_generator.py` | Remove `_precompute_project_dates` call from `run()` (moved upstream). Comment explains. (Fix 4) |
-| `pipeline/manifest.py` | `append_warning` helper (Fix 5b) |
-| `pipeline/orchestrator.py` | Import `append_warning` and 3 check functions; wire soft-flag loops in `run_phase3` and `_run_compressor_and_halt` (Fix 5b) |
-| `pipeline/precompute_utils.py` | `keyword_overlap_score`, `geography_score`, `compute_composite_score` (Fix 4); module docstring updated |
-| `pipeline/validators.py` | `check_fields_generator_warnings`, `check_content_reviewer_warnings`, `check_compressor_warnings` (Fix 5b); module docstring updated |
-| `models.py` | `ScoringKeywords` class; `DistilledToR.scoring_keywords` field (Fix 4b) |
-| `tests/test_cv_extractor_prompt.py` | `TestSystemPromptA1UnfilledPlaceholder` — 3 tests (Fix U) |
-| `tests/test_tor_summarizer_prompt.py` | **New file.** `TestSystemPromptA2ScoringKeywords` — 4 tests (Fix 4b) |
-| `tests/test_models.py` | `TestScoringKeywordsModel` + `TestDistilledToRScoringKeywords` — 7 tests (Fix 4b) |
-| `tests/test_precompute_utils.py` | `TestKeywordOverlapScore`, `TestGeographyScore`, `TestComputeCompositeScore` — ~20 tests (Fix 4) |
-| `tests/test_cv_tor_mapper.py` | `TestPrecomputeRelevanceScores`, `TestDurationUpstreamPrecompute` — ~9 tests; cap tests updated for current `MAX_PROJECTS_TO_KEEP=15` (Fix 4) |
+| `pipeline/config.py` | `ANTHROPIC_MODEL` → `claude-sonnet-4-20250514` (R5-C) |
+| `pipeline/agents/cv_extractor.py` | `SYSTEM_PROMPT_A1`: `### Unfilled placeholder detection` section (R5-E) |
+| `pipeline/agents/tor_summarizer.py` | `SYSTEM_PROMPT_A2`: `### Scoring keywords` section (R5-A) |
+| `pipeline/agents/cv_tor_mapper.py` | `_precompute_project_dates_for_mapper`; `_precompute_relevance_scores` real impl; `run()` upstream duration + scoring; `SYSTEM_PROMPT_A3` pre-computed scores section. New imports from `precompute_utils`. (R5-B + R5-A) |
+| `pipeline/agents/fields_generator.py` | Remove `_precompute_project_dates` call from `run()` (moved upstream). Comment explains. (R5-B) |
+| `pipeline/manifest.py` | `append_warning` helper (R5-D) |
+| `pipeline/orchestrator.py` | Import `append_warning` and 3 check functions; wire soft-flag loops in `run_phase3` and `_run_compressor_and_halt` (R5-D) |
+| `pipeline/precompute_utils.py` | `keyword_overlap_score`, `geography_score`, `compute_composite_score` (R5-B); module docstring updated |
+| `pipeline/validators.py` | `check_fields_generator_warnings`, `check_content_reviewer_warnings`, `check_compressor_warnings` (R5-D); module docstring updated |
+| `models.py` | `ScoringKeywords` class; `DistilledToR.scoring_keywords` field (R5-A) |
+| `tests/test_cv_extractor_prompt.py` | `TestSystemPromptA1UnfilledPlaceholder` — 3 tests (R5-E) |
+| `tests/test_tor_summarizer_prompt.py` | **New file.** `TestSystemPromptA2ScoringKeywords` — 4 tests (R5-A) |
+| `tests/test_models.py` | `TestScoringKeywordsModel` + `TestDistilledToRScoringKeywords` — 7 tests (R5-A) |
+| `tests/test_precompute_utils.py` | `TestKeywordOverlapScore`, `TestGeographyScore`, `TestComputeCompositeScore` — ~20 tests (R5-B) |
+| `tests/test_cv_tor_mapper.py` | `TestPrecomputeRelevanceScores`, `TestDurationUpstreamPrecompute` — ~9 tests; cap tests updated for current `MAX_PROJECTS_TO_KEEP=15` (R5-B) |
 | `tests/test_fields_generator_precompute.py` | Module docstring updated to note upstream move |
-| `tests/test_validators.py` | `TestCheckFieldsGeneratorWarnings`, `TestCheckContentReviewerWarnings`, `TestCheckCompressorWarnings` — 18 tests (Fix 5b) |
-| `tests/test_manifest_warnings.py` | **New file.** `TestAppendWarning` — 5 tests (Fix 5b) |
+| `tests/test_validators.py` | `TestCheckFieldsGeneratorWarnings`, `TestCheckContentReviewerWarnings`, `TestCheckCompressorWarnings` — 18 tests (R5-D) |
+| `tests/test_manifest_warnings.py` | **New file.** `TestAppendWarning` — 5 tests (R5-D) |
 
 ---
 
@@ -178,15 +178,15 @@ No router change required (manifest is already returned verbatim).
 | R5-Run 1 | — | Pass | Normal run. No issues. |
 | R5-Run 2 | — | Pass | Normal run. No issues. |
 | R5-Run 3 | — | Pass | Normal run. Occasional project dropping noted — planned for fine-tuning alongside compressor behaviour. |
-| R5-Run 4 | GIZ, Merita Kostari, 24 projects, PDF ToR | Partial | Three critical issues surfaced. (1) 11 of 24 projects extracted with blank `project_name` and empty detail fields — A1 failed to extract from merged-cell two-column CV table layout (Issue V). (2) `countries_of_experience` `date_from`/`date_to` inverted throughout — end date placed in `date_from` (Issue W). (3) Empty bullet placeholders appeared in text extraction but confirmed absent in actual rendered Word document — closed as false positive (Issue X). Additionally, `tor_data.json` confirmed `scoring_keywords` entirely empty despite rich PDF ToR content — Fix 4b prompt failure on PDF input (Issue Y). Scores near-uniform (0.20–0.28) with only geography providing signal. |
-| R5-Run 5 | GIZ, Jennifer Garvey, 12 projects, PDF ToR | Pass | `scoring_keywords` fully populated across all three pools — Fix 4b confirmed working on this ToR. All 12 project names correctly extracted, no blank entries. `countries_of_experience` empty (0 entries) — A1 extraction miss for this candidate's CV format, distinct from Issue W. 5 of 12 projects kept (floor at MIN=5); scores uniformly low (0.02–0.25) reflecting genuine candidate-ToR mismatch (Mozambique/US-based lawyer vs South Africa power sector ToR). 4 KQs generated and ToR-aligned. Compression not applied (854 words vs 1800 target). Issue X confirmed closed — no empty bullets in rendered output. |
+| R5-Run 4 | GIZ, Merita Kostari, 24 projects, PDF ToR | Partial | Three critical issues surfaced. (1) 11 of 24 projects extracted with blank `project_name` and empty detail fields — A1 failed to extract from merged-cell two-column CV table layout (Issue V). (2) `countries_of_experience` `date_from`/`date_to` inverted throughout — end date placed in `date_from` (Issue W). (3) Empty bullet placeholders appeared in text extraction but confirmed absent in actual rendered Word document — closed as false positive (Issue X). Additionally, `tor_data.json` confirmed `scoring_keywords` entirely empty despite rich PDF ToR content — R5-A prompt failure on PDF input (Issue Y). Scores near-uniform (0.20–0.28) with only geography providing signal. |
+| R5-Run 5 | GIZ, Jennifer Garvey, 12 projects, PDF ToR | Pass | `scoring_keywords` fully populated across all three pools — R5-A confirmed working on this ToR. All 12 project names correctly extracted, no blank entries. `countries_of_experience` empty (0 entries) — A1 extraction miss for this candidate's CV format, distinct from Issue W. 5 of 12 projects kept (floor at MIN=5); scores uniformly low (0.02–0.25) reflecting genuine candidate-ToR mismatch (Mozambique/US-based lawyer vs South Africa power sector ToR). 4 KQs generated and ToR-aligned. Compression not applied (854 words vs 1800 target). Issue X confirmed closed — no empty bullets in rendered output. |
 | R5-Run 6 | WB format, Rafael Jabba, PDF ToR, `page_limit=4` | Failed | Compressor hard failure: `"Expecting ',' delimiter: line 403 column 171 (char 14574)"`. A6 LLM response truncated mid-JSON. Root cause: 1,696 words of `activities_performed` across 5 projects (first project: 694 words) exceeded A6's effective output budget. Fix 8 Part 3 caps A4's input but A4 expanded content in output; Fix M Part 2 correctly restored originals — A6 received full untruncated volume with no equivalent cap. Additionally, `detailed_tasks` was empty (0 entries) despite WB format — A4 minimum output guarantee did not fire for `detailed_tasks` on geographic mismatch (The Gambia). Issues Z and AA surfaced. |
 
 ---
 
 ## Issues surfaced in Round 5 production validation
 
-### Issue V — A1 fails to extract `project_name` and project details from merged-cell table layout — **PENDING (Fix V)**
+### Issue V — A1 fails to extract `project_name` and project details from merged-cell table layout — **PENDING (R6-A)**
 
 **What was observed**: Run 4 — 11 of 24 projects in `cv_data.json` had empty
 `project_name` and empty detail fields (`activities_performed`, `positions_held`,
@@ -209,7 +209,7 @@ column (excluding dates) as the project name.
 
 ---
 
-### Issue W — A1 inverts `date_from` / `date_to` for `countries_of_experience` — **PENDING (Fix W)**
+### Issue W — A1 inverts `date_from` / `date_to` for `countries_of_experience` — **PENDING (R6-B)**
 
 **What was observed**: Run 4 — all `countries_of_experience` entries had
 `date_from` and `date_to` swapped. Example: "Kosovo | January 2021 - August 2019"
@@ -228,7 +228,7 @@ detected and auto-correct the swap.
 
 ---
 
-### Issue X — Renderer writes empty bullet placeholders when `other_relevant_info` and `publications` are both empty — **PENDING (Fix X)**
+### Issue X — Renderer writes empty bullet placeholders when `other_relevant_info` and `publications` are both empty — **PENDING (R6-C)**
 
 **What was observed**: Run 4 — three empty bullet points (`- ** ** -`) rendered
 in the "Other relevant information" section of the output document. Both
@@ -245,12 +245,12 @@ when at least one of `other_relevant_info` or `publications` is non-empty.
 
 ---
 
-### Issue Y — A2 produces empty `scoring_keywords` despite rich ToR content — **PENDING (Fix Y)**
+### Issue Y — A2 produces empty `scoring_keywords` despite rich ToR content — **PENDING (R6-D)**
 
 **What was observed**: Run 4 — `tor_data.json` showed `scoring_keywords.role_implied`,
 `scope_implied`, and `explicit` all as empty lists `[]`. The ToR (a 36-page PDF)
 contains explicit position requirements, work package descriptions, and country
-requirements sufficient to populate all three lists. Consequence: Fix 4's Python
+requirements sufficient to populate all three lists. Consequence: R5-B's Python
 keyword scorer had no keywords to match against, producing near-uniform scores
 (0.20–0.28) driven almost entirely by geography match and LLM adjustment.
 
@@ -267,7 +267,7 @@ correct, the PDF parsing is fine and the issue is purely prompt; (2) Move the
 `### Scoring keywords` extraction instruction earlier in `SYSTEM_PROMPT_A2` so
 it is not deprioritised on long inputs; (3) Add a `generation_warnings` entry
 to `tor_data.json` when all three keyword lists are empty, so the soft-flag
-validator (Fix 5b) can surface this to the user.
+validator (R5-D) can surface this to the user.
 
 ---
 
@@ -280,7 +280,7 @@ Closed as a false positive from the text extraction tool.
 
 ---
 
-### Issue Z — Compressor JSON truncation on large input — **PENDING (Fix Z)**
+### Issue Z — Compressor JSON truncation on large input — **PENDING (R6-E)**
 
 **What was observed**: Run 6 — compressor failed with JSON parse error at
 character 14,574. A6's LLM response was truncated mid-JSON. 1,696 words of
@@ -298,7 +298,7 @@ originals for the artifact write.
 
 ---
 
-### Issue AA — A4 `detailed_tasks` empty on geographic mismatch (WB format) — **PENDING (Fix AA)**
+### Issue AA — A4 `detailed_tasks` empty on geographic mismatch (WB format) — **PENDING (R6-F)**
 
 **What was observed**: Run 6 — WB format with `detailed_tasks` in
 `generative_field_keys`. A4 produced 0 entries despite Fix 8 Part 2's minimum
@@ -325,26 +325,26 @@ have at least one entry regardless of alignment strength.
 
 ## Design decisions recorded
 
-**Fix 2 full sweep**: A1/A2/A3/A5/A6 all upgraded to Sonnet via the single
+**R5-C full sweep**: A1/A2/A3/A5/A6 all upgraded to Sonnet via the single
 `ANTHROPIC_MODEL` constant. The primary driver is A2's role-implied keyword
-inference (Fix 4b), which requires Sonnet-quality reasoning. A3 and A5 are
+inference (R5-A), which requires Sonnet-quality reasoning. A3 and A5 are
 secondary beneficiaries. Field editor and A4 retain their independent constants.
 
-**Fix 4 keyword merging**: All three `scoring_keywords` lists (`role_implied`,
+**R5-B keyword merging**: All three `scoring_keywords` lists (`role_implied`,
 `scope_implied`, `explicit`) are merged into a single list for `_keyword_score`.
 No weighting differential between the three lists at the merge stage — the
 composite formula (`0.35` keyword weight overall) is the control.
 
-**Fix 4 fallback**: When `tor_data["scoring_keywords"]` is absent (old sessions),
+**R5-B fallback**: When `tor_data["scoring_keywords"]` is absent (old sessions),
 `_precompute_relevance_scores` falls back to `tor_data["sector_keywords"]`. If
 both are absent, it returns `None` — legacy A3 LLM-only scoring applies.
 
-**Fix 4 duration upstream move**: `_precompute_project_dates` call removed from
+**R5-B duration upstream move**: `_precompute_project_dates` call removed from
 `fields_generator.run()` and its equivalent added to `cv_tor_mapper.run()`. The
 helper itself stays in `fields_generator.py` for backward-compatible tests. The
 move is a call-site change only; the algorithm is identical.
 
-**Fix 5b scope**: Soft flags only (non-blocking). Hard blocks for null review and
+**R5-D scope**: Soft flags only (non-blocking). Hard blocks for null review and
 compression blocks were discussed and rejected in favour of soft flags — null
 blocks are possible in unusual edge cases (e.g. reviewer blocked) and halting on
 them would create false negatives. The existing Fix 5a hard-block on
@@ -359,4 +359,4 @@ both renderers) already exists. Fix S is one constant-calibration step away.
 records `MIN=3, MAX=10`. Current code values are `MIN=5, MAX=15`, reflecting
 post-Round-4 production tweaks. The Round 4 file is a historical record and
 not updated. Current code values treated as ground truth. These will be
-formally reviewed in Round 6 once Fix 4 scoring provides a stable distribution.
+formally reviewed in Round 6 once R5-B scoring provides a stable distribution.

@@ -38,7 +38,7 @@ client = Anthropic()
 # Minimum number of projects guaranteed to survive filtering regardless of score.
 # A dynamic floor of min(MIN_PROJECTS_TO_KEEP, total_projects) is applied inside
 # _enforce_threshold_and_cap to avoid restoring non-existent projects on thin CVs.
-# Fix PP-A (Round 7.5): raised from 5 → 10. Interim values pending the page_limit-tied
+# R7.5-C (Round 7.5): raised from 5 → 10. Interim values pending the page_limit-tied
 # formula deferred to Round 8 once larger sample size is available.
 MIN_PROJECTS_TO_KEEP: int = 10
 
@@ -46,13 +46,13 @@ MIN_PROJECTS_TO_KEEP: int = 10
 # Fix 8 Parts 2 and 3 (per-project text cap + prompt priority order) now protect
 # A4's token budget independently of project count, so this cap is raised to
 # preserve CV completeness for candidates with rich, relevant histories.
-# Fix PP-A (Round 7.5): raised from 15 → 30. Interim values pending the page_limit-tied
+# R7.5-C (Round 7.5): raised from 15 → 30. Interim values pending the page_limit-tied
 # formula deferred to Round 8 once larger sample size is available.
 MAX_PROJECTS_TO_KEEP: int = 30
 
 
 # ---------------------------------------------------------------------------
-# Fix 4 — Python pre-compute for relevance scoring (Round 5)
+# R5-B — Python pre-compute for relevance scoring (Round 5)
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +98,7 @@ def _compute_threshold(total_projects: int) -> float:
     Thresholds reduced by 0.10 vs Round 2 values to retain borderline-relevant
     projects (0.35–0.50 range) that represent genuine experience and were being
     discarded under the previous calibration.  These values are interim pending
-    Fix 4 (Python relevance scoring).
+    R5-B (Python relevance scoring).
     """
     if total_projects <= 5:
         return 0.30
@@ -213,7 +213,7 @@ def _enforce_threshold_and_cap(parsed: dict, original_projects: list[dict]) -> N
 
 def _protect_current_role(parsed: dict, original_projects: list[dict]) -> None:
     """
-    Fix PP-B — Unconditionally restore the most-recent current/ongoing project
+    R7.5-D — Unconditionally restore the most-recent current/ongoing project
     if it was dropped by ``_enforce_threshold_and_cap``.
 
     Human editors always include the candidate's active current role in the CV
@@ -227,7 +227,7 @@ def _protect_current_role(parsed: dict, original_projects: list[dict]) -> None:
     from ``original_projects`` is appended to
     ``parsed["data"]["relevant_projects"]``, and a warning is recorded.
 
-    Must run AFTER ``_enforce_threshold_and_cap`` and BEFORE the Fix EE sort
+    Must run AFTER ``_enforce_threshold_and_cap`` and BEFORE the R7-B sort
     so the restored project is correctly re-ordered by date.
     """
     scores: list[dict] = parsed["alignment"]["project_scores"]
@@ -257,7 +257,7 @@ def _protect_current_role(parsed: dict, original_projects: list[dict]) -> None:
     best_entry["kept"] = True
     parsed["data"]["relevant_projects"].append(best_orig)
     warnings.append(
-        f"Fix PP-B: Unconditionally restored current/ongoing project "
+        f"R7.5-D: Unconditionally restored current/ongoing project "
         f"'{best_entry.get('project_name', '?')}' "
         f"(date_to='{best_orig.get('date_to', '')}') that was dropped by "
         f"threshold/cap enforcement. Current role always kept regardless of score."
@@ -275,16 +275,16 @@ def _date_sort_key(
 
     ``primary_key`` controls which field is the primary sort dimension:
     - ``"date_from"`` (default): primary = date_from, tie-break = date_to.
-      Used for relevant_projects (Fix EE).
+      Used for relevant_projects (R7-B).
     - ``"date_to"``: primary = date_to, tie-break = date_from.
-      Used for countries_of_experience (Fix RR) — ongoing assignments
+      Used for countries_of_experience (R7.5-G) — ongoing assignments
       (date_to = "Present") float to the top because _parse_date maps
       "Present" → _current_date() which is always the largest value.
 
     Missing/unparseable dates sort to (0, 0) so they fall to the end of a
     descending sort — the most-recent entries appear first.
 
-    Fix EE: applied post-cap in cv_tor_mapper.run() so that mapped_cv.json
+    R7-B: applied post-cap in cv_tor_mapper.run() so that mapped_cv.json
     already has projects in newest-first order when A4 generates detailed_tasks.
     This guarantees that the WB renderer's positional pairing
     (detailed_tasks[i] ↔ relevant_projects[i]) is consistent.
@@ -307,9 +307,9 @@ def _sort_by_date_desc(
     """Sort a list of date-bearing dicts newest-first (descending).
 
     ``primary_key`` controls which date field drives the primary sort key.
-    Pass ``primary_key="date_to"`` for countries_of_experience (Fix RR) so
+    Pass ``primary_key="date_to"`` for countries_of_experience (R7.5-G) so
     that ongoing assignments float to the top. Default ``"date_from"``
-    preserves existing project-sort behaviour (Fix EE).
+    preserves existing project-sort behaviour (R7-B).
     """
     return sorted(
         items,
@@ -553,7 +553,7 @@ def run(run_dir: Path) -> dict:
     tor_data = resolve_tor_for_agents(tor_raw, context="cv_tor_mapper.run")
     params = manifest["params"]
 
-    # Fix 4 (Round 5): pre-fill project duration and year before A3 sees the data.
+    # R5-B (Round 5): pre-fill project duration and year before A3 sees the data.
     # Moved upstream from fields_generator.py so A3's LLM can use duration as a
     # scoring signal for long-term vs short-term assignment weighting.
     cv_data = _precompute_project_dates_for_mapper(cv_data)
@@ -601,12 +601,12 @@ def run(run_dir: Path) -> dict:
         # Must run BEFORE CVData.model_validate so the corrected data is validated.
         _enforce_threshold_and_cap(parsed, original_projects)
 
-        # Fix PP-B: unconditionally restore the most-recent current/ongoing
+        # R7.5-D: unconditionally restore the most-recent current/ongoing
         # project if it was dropped by threshold or cap enforcement.
-        # Must run before the Fix EE sort so the restored project is re-ordered.
+        # Must run before the R7-B sort so the restored project is re-ordered.
         _protect_current_role(parsed, original_projects)
 
-        # Fix EE: sort kept projects newest-first after the cap so that
+        # R7-B: sort kept projects newest-first after the cap so that
         # mapped_cv.json always has projects in descending date_from order.
         # This must happen at write-time (here) so that A4 generates
         # detailed_tasks in the same order the renderer will display projects —
@@ -617,15 +617,15 @@ def run(run_dir: Path) -> dict:
             primary_key="date_from",
         )
 
-        # Fix SS: collapse countries_of_experience rows sharing identical
+        # R7.5-H: collapse countries_of_experience rows sharing identical
         # (date_from, date_to) ranges into a single row with alphabetically
-        # concatenated country names. Must run before Fix RR sort.
+        # concatenated country names. Must run before R7.5-G sort.
         parsed["data"]["countries_of_experience"] = collapse_by_date_range(
             parsed["data"].get("countries_of_experience", []),
             label_field="country",
         )
 
-        # Fix RR: sort countries by date_to descending so ongoing assignments
+        # R7.5-G: sort countries by date_to descending so ongoing assignments
         # (date_to = "Present") float to the top. _parse_date already maps
         # "Present" → _current_date(), which is always the highest value.
         parsed["data"]["countries_of_experience"] = _sort_by_date_desc(

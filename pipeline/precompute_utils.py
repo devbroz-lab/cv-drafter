@@ -264,7 +264,7 @@ def restore_protected_fields(
 
 
 # ---------------------------------------------------------------------------
-# Fix SS — collapse_by_date_range (Round 7.5)
+# R7.5-H — collapse_by_date_range (Round 7.5)
 # ---------------------------------------------------------------------------
 
 
@@ -303,7 +303,7 @@ def collapse_by_date_range(
     -----
     - Matching is exact on the raw string values — no fuzzy or date-parsed
       comparison (Design decision 2 from PIPELINE_DIAGNOSTIC_ROUND_7.5.md).
-    - Ordering of the output list is controlled separately by Fix RR
+    - Ordering of the output list is controlled separately by R7.5-G
       (``_sort_by_date_desc`` with ``primary_key="date_to"``).
     - General-purpose: importable by any future consumer (A7, other renderers,
       additional table types).
@@ -331,7 +331,7 @@ def collapse_by_date_range(
 
 
 # ---------------------------------------------------------------------------
-# Fix 4 — Python relevance scoring helpers (Round 5)
+# R5-B — Python relevance scoring helpers (Round 5)
 # ---------------------------------------------------------------------------
 
 

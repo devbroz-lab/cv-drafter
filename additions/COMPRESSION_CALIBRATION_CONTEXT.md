@@ -79,7 +79,7 @@ target_words = page_limit * words_per_page
 - If the rendered document still exceeds `page_limit` after compression
   (Issue T — layout-driven overflow), that is a template issue and not
   addressable by adjusting this constant further.
-- Once Fix 4 (Python relevance scoring) is in place and project selection
+- Once R5-B (Python relevance scoring) is in place and project selection
   is more consistent, re-validate these constants — a more complete project
   set may shift the typical word count range.
 - Minimum 5 clean rendered outputs total (across both templates and page

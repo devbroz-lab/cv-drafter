@@ -16,7 +16,7 @@
 | FF-B | `pipeline/agents/fields_generator.py` | Added `certifications[]` as eligible KQ evidence source in `SYSTEM_PROMPT_A4` |
 | GG | `templates/giz.py` | Removed `[date_range]` suffix from institution cell; single-year diplomas now write `date_obtained` into `date_from` |
 | HH | `templates/giz.py` | Added `_xml_str()` helper applying `html.escape()` to all string values in `_build_context`; `import html` added |
-| II-A | `templates/wb.py` | Added comment documenting positional dependency on Fix EE sort order |
+| II-A | `templates/wb.py` | Added comment documenting positional dependency on R7-B sort order |
 | II-B | `pipeline/agents/field_editor.py` | Added `RENDERER_FIELD_MAP` per donor; `_check_renderer_field()` redirects/skips non-rendered field edits before Claude call; `SYSTEM_PROMPT_A7` note added |
 | JJ | `pipeline/agents/fields_generator.py` | Removed `_truncate_project_text_for_a4`, `_restore_truncated_project_text`, `A4_INPUT_PROJECT_WORD_CAP`, `_A4_CAPPED_FIELDS`; A4 receives full project text |
 | KK | `pipeline/agents/compressor.py` | Removed `_truncate_project_text_for_a6`, `A6_INPUT_PROJECT_WORD_CAP`, `_A6_CAPPED_FIELDS`, `import copy`, and all `input_field_truncated` warning emits |
@@ -48,8 +48,8 @@ compression. The current `TARGET_WORDS_PER_PAGE = 450` yields a 4-page target of
 is approximately correct (848 words post-compression). More data needed before
 recalibrating the constant.
 
-### Fix 4 threshold recalibration
-Review `MIN_PROJECTS_TO_KEEP` and `MAX_PROJECTS_TO_KEEP` constants once Fix 4
+### R5-B threshold recalibration
+Review `MIN_PROJECTS_TO_KEEP` and `MAX_PROJECTS_TO_KEEP` constants once R5-B
 scoring distribution stabilises. Round 7 runs confirm scoring is working as
 intended. No recalibration indicated yet — floor-guarantee activations in Runs 1,
 5, 7 are correct pipeline behaviour for genuinely misaligned candidates, not a
@@ -72,7 +72,7 @@ SAEP Outcome 3 project (regional transmission, SAPP, Southern Africa) scored 0.2
 against a South Africa-specific ToR because the CV uses "Southern Africa / SAPP"
 language rather than "South Africa". The work is directly SA-relevant but the
 lexical keyword scorer cannot detect it. Known limitation of lexical matching vs
-semantic matching. Tied to the embedding-based Fix 4 scoring path (deferred).
+semantic matching. Tied to the embedding-based R5-B scoring path (deferred).
 Recorded for awareness.
 
 ### Issue R7-3 — CLOSED
@@ -93,7 +93,7 @@ and the LLM is tolerant of partial placeholder content. No fix needed.
 
 ## Fixes identified in Round 7
 
-### Fix DD — A1 prompt: "References" section (citations) → `publications`
+### R7-A — A1 prompt: "References" section (citations) → `publications`
 
 **Problem**: Source CVs with a section labelled "References" containing academic
 citations (not contact references) may be routed to the structured `references[]`
@@ -110,7 +110,7 @@ references only — i.e. named individuals with contact details.
 
 ---
 
-### Fix EE — Post-cap chronological sort of `relevant_projects` and `countries_of_experience`
+### R7-B — Post-cap chronological sort of `relevant_projects` and `countries_of_experience`
 
 **Problem**: After A3's threshold/cap enforcement, kept projects are returned in
 score-rank order, not chronological order. The renderer renders them in whatever
@@ -128,7 +128,7 @@ by date. GIZ CVs conventionally list projects newest-first.
 
 ---
 
-### Fix FF-A — A1 prompt: certifications routing to both `certifications[]` and `membership_professional_bodies`
+### R7-C — A1 prompt: certifications routing to both `certifications[]` and `membership_professional_bodies`
 
 **Problem**: Professional credentials such as "Eur Ing" and "C Eng" are being
 routed exclusively to `membership_professional_bodies` rather than also being
@@ -146,7 +146,7 @@ fields serve different downstream purposes: `certifications[]` feeds A4 generati
 
 ---
 
-### Fix FF-B — A4 prompt: draw from `certifications[]` as source for KQ bullets
+### R7-D — A4 prompt: draw from `certifications[]` as source for KQ bullets
 
 **Problem**: A4's KQ generation prompt does not instruct it to draw from
 `certifications[]` as eligible source material. Certifications (formal credentials,
@@ -163,7 +163,7 @@ entry matches a ToR `required_competency`, it may ground a KQ bullet with
 
 ---
 
-### Fix GG — Education date duplication in GIZ renderer
+### R7-E — Education date duplication in GIZ renderer
 
 **Problem**: Education rows in Table 1 of the GIZ output show the date range
 twice: once from the static `[DATE FROM – DATE TO]` label baked into the template
@@ -189,7 +189,7 @@ only the institution name.
 
 ---
 
-### Fix HH — Ampersand `&` stripping across all text fields in GIZ renderer
+### R7-F — Ampersand `&` stripping across all text fields in GIZ renderer
 
 **Problem**: Ampersand characters in field values are being stripped (rendered as
 a double space) in the GIZ output. Confirmed across Runs 3 and 5: "Legal & Policy"
@@ -212,7 +212,7 @@ via `{{ variable }}`) rather than being embedded as raw XML. Alternatively, appl
 
 ---
 
-### Fix R7-5 — Education rows not sorted newest-first in GIZ renderer
+### R7-G — Education rows not sorted newest-first in GIZ renderer
 
 **Problem**: Education entries in the GIZ output Table 1 are rendered in source CV
 order, which may be oldest-first. GIZ CV convention is newest-first (most recent
@@ -226,12 +226,12 @@ Use `_parse_date_to_months` from `precompute_utils.py` for consistent parsing.
 
 ---
 
-### Fix II-A — WB renderer: make `detailed_tasks` ↔ `relevant_projects` pairing explicit
+### R7-H — WB renderer: make `detailed_tasks` ↔ `relevant_projects` pairing explicit
 
 **Problem**: In `wb.py` `_build_context`, `detailed_tasks[i]` is paired to
 `relevant_projects[i]` by pure list position:
 `"tasks_assigned": detailed_tasks[i] if i < len(detailed_tasks) else ""`.
-Fix EE will re-sort `relevant_projects` by date after alignment. If project order
+R7-B will re-sort `relevant_projects` by date after alignment. If project order
 changes between A4 generation (which produces `detailed_tasks` indexed to the
 pre-sort order) and the renderer (which renders against the post-sort order), task
 statements will appear next to the wrong projects in the WB output.
@@ -239,17 +239,17 @@ statements will appear next to the wrong projects in the WB output.
 **Scope**: `templates/wb.py` — `_build_context` relevant_projects section.
 Python-only.
 
-**Planned change**: Fix EE should be applied *before* A4 runs (i.e. in
+**Planned change**: R7-B should be applied *before* A4 runs (i.e. in
 `cv_tor_mapper.py` so `mapped_cv.json` already has projects in sorted order). This
 ensures A4 generates `detailed_tasks` in the same order the renderer will render
 projects. The positional pairing in `wb.py` then remains correct. The fix is
-therefore in the *timing* of Fix EE (sort happens at mapper write-time, not
+therefore in the *timing* of R7-B (sort happens at mapper write-time, not
 renderer read-time), not in the renderer itself. Add an explicit comment in `wb.py`
 documenting the positional dependency.
 
 ---
 
-### Fix II-B — A7: add `RENDERER_FIELD_MAP` per donor
+### R7-I — A7: add `RENDERER_FIELD_MAP` per donor
 
 **Problem**: A7 operates on the data model but has no visibility into which fields
 are actually rendered in the output document. Specifically:
@@ -277,7 +277,7 @@ A7 currently has no way to detect or warn about this discrepancy.
 
 ---
 
-### Fix JJ — Remove A4 truncation-and-restore logic
+### R7-J — Remove A4 truncation-and-restore logic
 
 **Problem**: `_truncate_project_text_for_a4` caps `activities_performed` and
 `main_project_features` to 150 words per project in A4's input. This was
@@ -297,7 +297,7 @@ bullets and detailed tasks from a reduced view of each project.
 
 ---
 
-### Fix KK — Remove A6 truncation (silent data loss)
+### R7-K — Remove A6 truncation (silent data loss)
 
 **Problem**: `_truncate_project_text_for_a6` caps project text to 150 words per
 field before A6's input. Unlike Fix 8 Part 3 / Fix M Part 2 for A4, **there is no
@@ -323,7 +323,7 @@ warning type entirely.
 
 ---
 
-### Fix LL — A6 donor-aware compression: exclude `activities_performed` for GIZ
+### R7-L — A6 donor-aware compression: exclude `activities_performed` for GIZ
 
 **Problem**: The GIZ renderer (`giz.py` + `giz_dynamic_template.py`) never renders
 `activities_performed` in the output document — the field is passed to the template
@@ -349,7 +349,7 @@ logic. Prompt + Python.
 
 ---
 
-### Fix MM — Transmit all pipeline warnings through the API to the frontend
+### R7-M — Transmit all pipeline warnings through the API to the frontend
 
 **Problem**: The following warning types are written to disk correctly but never
 transmitted to the frontend via any API endpoint:
@@ -380,14 +380,14 @@ abstraction decisions are left entirely to the UI developer.
 
 | File | Planned change |
 |------|---------------|
-| `pipeline/agents/cv_extractor.py` | Fix DD: citations routing rule; Fix FF-A: certifications dual-routing |
-| `pipeline/agents/cv_tor_mapper.py` | Fix EE: post-cap sort of `relevant_projects` + `countries_of_experience` (sort at write-time so A4 sees sorted order) |
-| `pipeline/agents/fields_generator.py` | Fix FF-B: `certifications[]` as KQ source; Fix JJ: remove truncation-and-restore logic |
-| `pipeline/agents/compressor.py` | Fix KK: remove A6 truncation; Fix LL: donor-aware `activities_performed` exclusion for GIZ |
-| `templates/giz.py` | Fix GG: remove `[date_range]` from institution string; Fix HH: ampersand escaping; Fix R7-5: education newest-first sort |
-| `templates/wb.py` | Fix II-A: document positional dependency; confirm sort timing with Fix EE |
-| `pipeline/agents/field_editor.py` | Fix II-B: `RENDERER_FIELD_MAP` per donor; redirect/warn on non-rendered fields |
-| `api/routers/sessions.py` | Fix MM: transmit all warning types to frontend |
+| `pipeline/agents/cv_extractor.py` | R7-A: citations routing rule; R7-C: certifications dual-routing |
+| `pipeline/agents/cv_tor_mapper.py` | R7-B: post-cap sort of `relevant_projects` + `countries_of_experience` (sort at write-time so A4 sees sorted order) |
+| `pipeline/agents/fields_generator.py` | R7-D: `certifications[]` as KQ source; R7-J: remove truncation-and-restore logic |
+| `pipeline/agents/compressor.py` | R7-K: remove A6 truncation; R7-L: donor-aware `activities_performed` exclusion for GIZ |
+| `templates/giz.py` | R7-E: remove `[date_range]` from institution string; R7-F: ampersand escaping; R7-G: education newest-first sort |
+| `templates/wb.py` | R7-H: document positional dependency; confirm sort timing with R7-B |
+| `pipeline/agents/field_editor.py` | R7-I: `RENDERER_FIELD_MAP` per donor; redirect/warn on non-rendered fields |
+| `api/routers/sessions.py` | R7-M: transmit all warning types to frontend |
 
 ---
 
@@ -395,42 +395,42 @@ abstraction decisions are left entirely to the UI developer.
 
 Priority order for Round 7:
 
-1. Fix EE — chronological sort in mapper (foundational — Fix II-A depends on it)
-2. Fix II-A — confirm WB task-project pairing after Fix EE
-3. Fix KK — remove A6 truncation (silent data loss — highest correctness priority)
-4. Fix JJ — remove A4 truncation (quality improvement)
-5. Fix LL — donor-aware compression for GIZ (correctness + efficiency)
-6. Fix GG — education date duplication (renderer correctness)
-7. Fix HH — ampersand escaping (renderer correctness)
-8. Fix R7-5 — education newest-first sort (renderer convention)
-9. Fix DD — A1 citations routing (prompt)
-10. Fix FF-A — A1 certifications dual-routing (prompt)
-11. Fix FF-B — A4 certifications as KQ source (prompt)
-12. Fix II-B — A7 `RENDERER_FIELD_MAP` (A7 sync)
-13. Fix MM — API warning transmission (observability)
+1. R7-B — chronological sort in mapper (foundational — R7-H depends on it)
+2. R7-H — confirm WB task-project pairing after R7-B
+3. R7-K — remove A6 truncation (silent data loss — highest correctness priority)
+4. R7-J — remove A4 truncation (quality improvement)
+5. R7-L — donor-aware compression for GIZ (correctness + efficiency)
+6. R7-E — education date duplication (renderer correctness)
+7. R7-F — ampersand escaping (renderer correctness)
+8. R7-G — education newest-first sort (renderer convention)
+9. R7-A — A1 citations routing (prompt)
+10. R7-C — A1 certifications dual-routing (prompt)
+11. R7-D — A4 certifications as KQ source (prompt)
+12. R7-I — A7 `RENDERER_FIELD_MAP` (A7 sync)
+13. R7-M — API warning transmission (observability)
 
 ---
 
 ## Design decisions
 
-1. **Fix EE timing**: Sort applied at `cv_tor_mapper.py` write-time (to
+1. **R7-B timing**: Sort applied at `cv_tor_mapper.py` write-time (to
    `mapped_cv.json`), not at render time. This ensures A4 generates `detailed_tasks`
    in the same order as the renderer will display projects, keeping the WB
    positional pairing correct without changes to `wb.py`.
 
-2. **Fix II-A**: No change to WB renderer pairing logic. The fix is ensuring Fix
+2. **R7-H**: No change to WB renderer pairing logic. The fix is ensuring Fix
    EE sorts before A4 runs, so the positional coupling is never broken.
 
-3. **Fix JJ + Fix KK**: Both truncation mechanisms removed entirely. The 150-word
+3. **R7-J + R7-K**: Both truncation mechanisms removed entirely. The 150-word
    cap was introduced when smaller models were in use. `claude-sonnet-4-6`'s 200k
    context window makes it unnecessary. For A4, the restoration step was working
    correctly but is now redundant. For A6, the lack of restoration was causing
    silent permanent data loss.
 
-4. **Fix LL**: `activities_performed` is not rendered by the GIZ template. A6
+4. **R7-L**: `activities_performed` is not rendered by the GIZ template. A6
    compressing it wastes budget. Exclusion is donor-conditional — WB runs still
    compress this field because it is rendered in WB output.
 
-5. **Fix MM**: Display/abstraction decisions are entirely the UI developer's
+5. **R7-M**: Display/abstraction decisions are entirely the UI developer's
    responsibility. The API change is additive only — no existing response shapes
    are modified.

@@ -1,12 +1,12 @@
 """
-Tests for A2 (ToR Summarizer) prompt instructions — Fix 4b (Round 5).
+Tests for A2 (ToR Summarizer) prompt instructions — R5-A (Round 5).
 
 These tests do NOT call the LLM.  They assert that required marker phrases
 are present in SYSTEM_PROMPT_A2 so that accidental future edits removing
 the scoring_keywords extraction instructions are caught immediately.
 
-Fix 4b — scoring_keywords: A2 emits role_implied, scope_implied, explicit
-         keyword sets into DistilledToR.scoring_keywords for use by Fix 4's
+R5-A — scoring_keywords: A2 emits role_implied, scope_implied, explicit
+         keyword sets into DistilledToR.scoring_keywords for use by R5-B's
          Python relevance scorer.
 """
 
@@ -43,7 +43,7 @@ class TestSystemPromptA2ScoringKeywords:
         assert country_idx != -1, "### country_experience_required section not found"
         assert scoring_idx < country_idx, (
             "scoring_keywords section must appear before country_experience_required "
-            "(Fix Y reorder not applied)"
+            "(R6-D reorder not applied)"
         )
 
     def test_scoring_keywords_non_empty_guarantee_present(self):

@@ -1,7 +1,7 @@
 """
 Tests for the project date pre-compute helper in fields_generator.py.
 
-Note (Round 5 — Fix 4): The CALL SITE for this pre-compute moved upstream
+Note (Round 5 — R5-B): The CALL SITE for this pre-compute moved upstream
 to cv_tor_mapper.run() so that A3's LLM can see duration as a scoring signal.
 The _precompute_project_dates helper remains in fields_generator.py for
 backward compatibility and is no longer called from fields_generator.run().

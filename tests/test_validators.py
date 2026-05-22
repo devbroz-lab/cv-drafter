@@ -12,7 +12,7 @@ Covers validate_fields_generator_output (hard-block):
   - PipelineValidationError __str__ includes stage, message, details.
 
 Covers check_fields_generator_warnings, check_content_reviewer_warnings,
-check_compressor_warnings (Fix 5b soft flags):
+check_compressor_warnings (R5-D soft flags):
   - Missing file → returns [] (no crash).
   - Healthy output → returns [].
   - Each warning condition triggers the expected entry.
@@ -216,7 +216,7 @@ class TestValidateFieldsGeneratorOutputDetails:
 
 
 # ---------------------------------------------------------------------------
-# Fix 5b — soft-flag check helpers
+# R5-D — soft-flag check helpers
 # ---------------------------------------------------------------------------
 
 def _write_gf_with_review_compression(
@@ -367,7 +367,7 @@ class TestCheckCompressorWarnings:
 
 
 # ---------------------------------------------------------------------------
-# Fix Y — check_tor_summarizer_warnings
+# R6-D — check_tor_summarizer_warnings
 # ---------------------------------------------------------------------------
 
 def _write_tor(tmp_path: Path, pools: list[dict]) -> None:

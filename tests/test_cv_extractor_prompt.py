@@ -1,24 +1,24 @@
 """
-Tests for A1 (CV Extractor) prompt instructions — Fix Q, Fix O, Fix R, Fix U,
-Fix V, Fix W.
+Tests for A1 (CV Extractor) prompt instructions — R4-D, R4-B, R4-E, R5-E,
+R6-A, R6-B.
 
 These tests do NOT call the LLM.  They assert that required marker phrases
 are present in SYSTEM_PROMPT_A1 so that accidental future edits removing
 routing or detection instructions are caught immediately.
 
-Fix Q — other_skills routing: "Other skills" section label → other_skills field.
-Fix O — language scale direction detection: emit language_scale_direction.
-Fix R — references and certification_declaration extraction.
-Fix U — unfilled placeholder detection: append extraction_warnings entry.
-Fix V — merged-cell two-column project table: extract project_name from left column.
-Fix W — date inversion auto-correct across all four date-field types.
+R4-D — other_skills routing: "Other skills" section label → other_skills field.
+R4-B — language scale direction detection: emit language_scale_direction.
+R4-E — references and certification_declaration extraction.
+R5-E — unfilled placeholder detection: append extraction_warnings entry.
+R6-A — merged-cell two-column project table: extract project_name from left column.
+R6-B — date inversion auto-correct across all four date-field types.
 """
 
 from pipeline.agents.cv_extractor import SYSTEM_PROMPT_A1
 
 
 # ---------------------------------------------------------------------------
-# Fix Q — other_skills / certifications routing
+# R4-D — other_skills / certifications routing
 # ---------------------------------------------------------------------------
 
 class TestSystemPromptA1OtherSkillsRouting:
@@ -49,7 +49,7 @@ class TestSystemPromptA1OtherSkillsRouting:
 
 
 # ---------------------------------------------------------------------------
-# Fix O — language scale direction detection
+# R4-B — language scale direction detection
 # ---------------------------------------------------------------------------
 
 class TestSystemPromptA1ScaleDirection:
@@ -69,7 +69,7 @@ class TestSystemPromptA1ScaleDirection:
 
 
 # ---------------------------------------------------------------------------
-# Fix R — references and certification_declaration
+# R4-E — references and certification_declaration
 # ---------------------------------------------------------------------------
 
 class TestSystemPromptA1ReferenceExtraction:
@@ -85,7 +85,7 @@ class TestSystemPromptA1ReferenceExtraction:
 
 
 # ---------------------------------------------------------------------------
-# Fix U — unfilled placeholder detection
+# R5-E — unfilled placeholder detection
 # ---------------------------------------------------------------------------
 
 class TestSystemPromptA1UnfilledPlaceholder:
@@ -116,7 +116,7 @@ class TestSystemPromptA1UnfilledPlaceholder:
 
 
 # ---------------------------------------------------------------------------
-# Fix V — merged-cell and two-column project table extraction
+# R6-A — merged-cell and two-column project table extraction
 # ---------------------------------------------------------------------------
 
 class TestSystemPromptA1MergedCellExtraction:
@@ -141,7 +141,7 @@ class TestSystemPromptA1MergedCellExtraction:
 
 
 # ---------------------------------------------------------------------------
-# Fix W — date inversion auto-correct across all four date-field types
+# R6-B — date inversion auto-correct across all four date-field types
 # ---------------------------------------------------------------------------
 
 class TestSystemPromptA1DateOrdering:

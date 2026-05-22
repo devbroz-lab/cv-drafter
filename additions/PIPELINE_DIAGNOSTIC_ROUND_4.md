@@ -8,7 +8,7 @@
 
 ## Fixes delivered
 
-### Fix N — Raise project floor, lower thresholds, raise project cap
+### R4-A — Raise project floor, lower thresholds, raise project cap
 
 **Problem**: Across Runs 4, 5, and 6 of Round 3, A3 consistently produced CVs
 with only 2–6 projects from candidates with 12–24 project histories. Projects
@@ -31,13 +31,13 @@ that protection independently of project count.
 - `SYSTEM_PROMPT_A3` threshold table updated to match: `0.30 / 0.40 / 0.50`.
   New test `test_prompt_threshold_values_match_python` guards against future drift.
 
-**Note**: These constants are interim values pending Fix 4 (Python relevance
-scoring). Threshold calibration should be revisited once Fix 4 produces
+**Note**: These constants are interim values pending R5-B (Python relevance
+scoring). Threshold calibration should be revisited once R5-B produces
 consistent scores.
 
 ---
 
-### Fix P — Guide Agent 4 to prefer candidate's own KQ text when already bullet-style
+### R4-C — Guide Agent 4 to prefer candidate's own KQ text when already bullet-style
 
 **Problem**: Round 3 Run 4 — A1 correctly extracted 9 bullet-style
 `key_qualifications` matching the expected output style exactly. A4 discarded
@@ -58,7 +58,7 @@ when bullet-style` subsection under the GIZ `key_qualifications` section. Specif
 
 ---
 
-### Fix Q — Route `other_skills` correctly at Agent 1 extraction time
+### R4-D — Route `other_skills` correctly at Agent 1 extraction time
 
 **Problem**: Round 3 Run 4 — source CV has a "Other skills" section with 6
 entries. A1 routed the content to `certifications[]` but left `other_skills: []`
@@ -77,7 +77,7 @@ section before `### Fields to leave empty — always`. Specifies label-driven ro
 
 ---
 
-### Fix O — Detect numeric CEFR scale direction at Agent 1 extraction time
+### R4-B — Detect numeric CEFR scale direction at Agent 1 extraction time
 
 **Problem**: Round 3 Run 4 source CV states `"1 – excellent; 5 – basic"`,
 meaning `1 = C2`. Fix M Part 1 mapped `1 → C1` (wrong direction). A1 correctly
@@ -120,7 +120,7 @@ correct intended behaviour per the Round 3 production evidence.
 
 ---
 
-### Fix R — `references` and `certification_declaration` schema + extraction + context
+### R4-E — `references` and `certification_declaration` schema + extraction + context
 
 **Problem**: Round 3 Run 6 — source CV contains a References section (3 named
 contacts with full contact details) and a certification declaration block.
@@ -189,7 +189,7 @@ template edit, tracked in `PIPELINE_DIAGNOSTIC_CONTEXT.md` §5.
 
 | Run | CV type | Result | Notes |
 |-----|---------|--------|-------|
-| R4-Run 3 | GIZ, Dejan Stojadinovic, 44 projects, `page_limit=2` | Partial | Fix N confirmed: 10 projects kept correctly. Compressor ran aggressively — `words_before=1058`, `words_after=534`, `target_words=900` — cutting 524 words. Rendered document still exceeded 2 pages despite compression. Two issues surfaced: Issue S (word target not scaled to page limit) and Issue T (layout-driven overflow, out of pipeline scope). A5 Flag 1: incomplete KQ — source CV contains verbatim placeholder `"More than X years experience as Team Leader"`. A1 extracted faithfully; A5 correctly flagged. Confirmed as source document defect — Issue U. |
+| R4-Run 3 | GIZ, Dejan Stojadinovic, 44 projects, `page_limit=2` | Partial | R4-A confirmed: 10 projects kept correctly. Compressor ran aggressively — `words_before=1058`, `words_after=534`, `target_words=900` — cutting 524 words. Rendered document still exceeded 2 pages despite compression. Two issues surfaced: Issue S (word target not scaled to page limit) and Issue T (layout-driven overflow, out of pipeline scope). A5 Flag 1: incomplete KQ — source CV contains verbatim placeholder `"More than X years experience as Team Leader"`. A1 extracted faithfully; A5 correctly flagged. Confirmed as source document defect — Issue U. |
 | R4-Run 4 | — | Pass | Normal run, acceptable results. No issues. |
 | R4-Run 5 | — | Pass | Normal run, acceptable results. No issues. |
 | R4-Run 6 | WB format, Rafael Jabba | Partial | A5 Flag 1: `from_date` / `to_date` inconsistency between `employment_record` (Kenya: `11/2020–05/2021`) and `countries_of_experience` (Kenya: `10/2020–06/2021`). Confirmed against source CV — both date sets present verbatim in different source sections. A1 extracted faithfully. Legitimate A5 finding; genuine source inconsistency requiring candidate verification. Closed as expected behaviour. |
@@ -226,7 +226,7 @@ prose word count alone.
 
 **Resolution**: Word template layout issue, not a pipeline defect. Closed.
 
-### Issue U — A1 extracts unfilled placeholder text verbatim — **PENDING (Fix U)**
+### Issue U — A1 extracts unfilled placeholder text verbatim — **PENDING (R5-E)**
 
 **What was observed**: Run 3 — source CV contains `"More than X years experience
 as Team Leader"` where `X` is a literal unfilled placeholder. A1 extracted this
@@ -253,46 +253,46 @@ the warning surfaces it for human review. No schema changes required.
 
 ## Design decisions recorded
 
-**Fix N dynamic floor**: `effective_floor = min(MIN_PROJECTS_TO_KEEP, len(scores))`
+**R4-A dynamic floor**: `effective_floor = min(MIN_PROJECTS_TO_KEEP, len(scores))`
 computed inside `_enforce_threshold_and_cap` rather than making `MIN_PROJECTS_TO_KEEP`
 a function. Keeps the constant semantics clean; the clamp is an internal guard.
 
-**Fix O default flip**: `NUMERIC_SCALE_TO_CEFR` changed from `1→C1` (Round 3
-interim) to `1→C2` (1_best default). This is the dominant convention in
+**R4-B default flip**: `NUMERIC_SCALE_TO_CEFR` changed from `1→C1` (Fix M Part 1
+default; Round 3 interim) to `1→C2` (1_best default). This is the dominant convention in
 development-sector CVs per Round 3 Run 4 evidence. Sessions reprocessed after
 this change will produce different `*_cefr` values for numeric-scale inputs.
 
-**Fix O field placement**: `language_scale_direction` placed at the top level of
+**R4-B field placement**: `language_scale_direction` placed at the top level of
 `CVData` (not inside `LanguageProficiency`) — matches the diagnostic doc's framing
 and reflects the practical reality that one consistent scale convention applies
 per source document.
 
-**Fix R rendering gap**: Static `.docx` templates confirmed (via `python-docx`
+**R4-E rendering gap**: Static `.docx` templates confirmed (via `python-docx`
 inspection) to have no `references` or `certification_declaration` placeholders.
 Data flow implemented; rendering deferred to a manual one-time template edit.
 Documented in `PIPELINE_DIAGNOSTIC_CONTEXT.md` §5 ("What this document does not
 cover").
 
-**Fix 4, Fix 2, Fix 5b scope reduction**: These three items appear in the Round 4
-per-round file as "Planned fixes" but are deferred to Round 5. Fix 4 depends on
-Fix N being validated in production first. Fix 2 depends on Fix N validation for
+**R5-B, R5-C, R5-D scope reduction**: These three items appear in the Round 4
+per-round file as "Planned fixes" but are deferred to Round 5. R5-B depends on
+R4-A being validated in production first. R5-C depends on R4-A validation for
 the same reason (upgrading model and constants simultaneously obscures regression
-attribution). Fix 5b (soft-flag validators) is low urgency and implement-last.
+attribution). R5-D (soft-flag validators) is low urgency and implement-last.
 
-**A2 keyword extraction for Fix 4 scoring (Fix 4b)**: During Round 4 production
-review, an extension to Fix 4 was identified and agreed. A2 (ToR Summarizer)
+**A2 keyword extraction for R5-B scoring (R5-A)**: During Round 4 production
+review, an extension to R5-B was identified and agreed. A2 (ToR Summarizer)
 should be extended to emit a `scoring_keywords` block containing three keyword
 sets derived from the ToR: `role_implied` (keywords implied by the position
 title that may not appear explicitly in the ToR body), `scope_implied` (thematic
 areas and intervention types described in the project scope), and `explicit`
 (directly stated requirements such as geography, years of experience, sector).
-These keywords feed into Fix 4's Python keyword overlap scoring (35% weight)
+These keywords feed into R5-B's Python keyword overlap scoring (35% weight)
 as a richer, more ToR-faithful signal than what can be inferred from tasks alone.
 The keyword set would be written to `tor_data.json` and visible for audit —
 making the scoring basis transparent and explainable. This is a light generative
 inference step (role-implied keywords require A2 to reason beyond extraction),
-which pairs with Fix 2 (A2 upgrade to Sonnet). Fix 4 and Fix 2 should therefore
-land in the same round. Documented as Fix 4b; to be incorporated into
+which pairs with R5-C (A2 upgrade to Sonnet). R5-B and R5-C should therefore
+land in the same round. Documented as R5-A; to be incorporated into
 `RELEVANCE_SCORING_DESIGN.md` before Round 5 implementation.
 
 **Compressor word target (Issue S)**: Agreed fix approach is Option 1 —

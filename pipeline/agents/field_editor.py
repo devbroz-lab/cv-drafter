@@ -54,7 +54,7 @@ MODEL = "claude-sonnet-4-6"
 # MODEL = "claude-haiku-4-5-20251001"
 
 # ---------------------------------------------------------------------------
-# Fix II-B: RENDERER_FIELD_MAP — per-donor rendered project fields
+# R7-I: RENDERER_FIELD_MAP — per-donor rendered project fields
 # ---------------------------------------------------------------------------
 # Keyed by normalised donor format string. Value: set of project-level field
 # names that are actually placed in cells in the output .docx for that donor.
@@ -473,8 +473,9 @@ You are a copy-editor applying recruiter instructions to professional CV fields 
 formatted for international development donors (GIZ, World Bank).
 
 Your only job is to carry out the recruiter's edit instruction and return a JSON \
-object — nothing else. The recruiter is a trusted professional working on their \
-own candidate's CV. Their instructions are authoritative.
+object — nothing else. The recruiter is a trusted professional with direct \
+knowledge of the candidate. Their instructions are authoritative and may include \
+facts the recruiter has been told by the candidate or the candidate's firm.
 
 RESPONSE FORMAT
 ---------------
@@ -488,14 +489,18 @@ DEFAULT: ALWAYS USE "apply"
 "apply" is your default action. Execute the instruction as literally as possible.
 
 Use "skip" ONLY in this one situation:
-  The instruction explicitly names a specific credential, certification, \
-publication, award, or external fact (e.g. "add their PMP certification", \
-"mention the 2019 UN report") that is completely absent from the current \
-field value AND absent from the CV context provided, AND adding it would \
-constitute inserting a verifiable claim the recruiter has not supplied.
+  The instruction asks you to add a specific named credential, certification, \
+publication, or award (e.g. "add their PMP certification", "mention the 2019 \
+UN award") AND the instruction itself does not supply the necessary detail \
+(name, year, issuing body) AND it is absent from the CV context provided. \
+In this case adding it would require you to independently invent a verifiable \
+claim — skip and explain what detail is missing.
 
 DO NOT use "skip" for any of the following — use "apply" instead:
+  - The recruiter supplies new information in the instruction itself — even if \
+it is absent from the CV context. If the instruction contains the fact, include it.
   - Changing or correcting a location, city, country, or region
+  - Adding a project name, employer name, or role title the recruiter provides
   - Making text more concise, shorter, or trimmed to a word limit
   - Rewording, rephrasing, or paraphrasing for clarity or tone
   - Switching between active and passive voice
@@ -515,7 +520,8 @@ quotes, no explanation inside the value.
 - Preserve all factual content of the original unless the instruction \
 explicitly asks you to change a specific fact.
 - Respect the word limit if one is provided. If the edited text would exceed \
-it, trim to fit while preserving the instruction's intent.
+it, compress existing content first to make room — do not drop the new \
+information the recruiter has asked you to add.
 - Apply donor format conventions:
     GIZ        — active verbs, past tense, evidence-grounded, concise.
     World Bank — forward-looking task statements, action verbs, outcome-oriented.
@@ -546,6 +552,7 @@ CONTEXT FIELDS (provided in the user message)
   CV context     — The proposed position and top project names. Use this as
                    grounding to understand the expert's background.\
 """
+
 
 def _field_key_from_path(field_path: str) -> str:
     """
@@ -735,7 +742,7 @@ def run_field_editor(
         if field_path != raw_path:
             log.info("[Edit %d/%d] resolved path '%s' → '%s'", i, len(edits), raw_path, field_path)
 
-        # Fix II-B: redirect or skip edits targeting non-rendered project fields.
+        # R7-I: redirect or skip edits targeting non-rendered project fields.
         redirect_path, renderer_skip_reason = _check_renderer_field(field_path, donor)
         if renderer_skip_reason:
             log.info("  SKIPPED (non-rendered field) — %s", renderer_skip_reason)

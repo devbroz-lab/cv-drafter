@@ -1,6 +1,6 @@
 """
-Smoke tests for new CVData schema fields introduced in Round 4 (Fix O + Fix R)
-and DistilledToR schema fields introduced in Round 5 (Fix 4b).
+Smoke tests for new CVData schema fields introduced in Round 4 (R4-B + R4-E)
+and DistilledToR schema fields introduced in Round 5 (R5-A).
 
 Verifies:
   - Reference model instantiates with all optional fields.
@@ -127,7 +127,7 @@ class TestBackwardCompatibility:
 
 
 # ---------------------------------------------------------------------------
-# ScoringKeywords + DistilledToR.scoring_keywords (Fix 4b — Round 5)
+# ScoringKeywords + DistilledToR.scoring_keywords (R5-A — Round 5)
 # ---------------------------------------------------------------------------
 
 class TestScoringKeywordsModel:

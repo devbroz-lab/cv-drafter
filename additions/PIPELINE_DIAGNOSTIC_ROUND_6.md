@@ -8,7 +8,7 @@
 
 ## Fixes delivered
 
-### Fix Z — Word cap on A6 (compressor) input
+### R6-E — Word cap on A6 (compressor) input
 
 **Problem**: Run 6 of Round 5 — compressor hard failure. A6 received 1,696 words
 of `activities_performed` across 5 projects (first project: 694 words), exceeding
@@ -34,7 +34,7 @@ assembly. Mirrors Fix 8 Part 3 pattern.
 
 ---
 
-### Fix AA — A4 minimum output guarantee extended to all `generative_field_keys`
+### R6-F — A4 minimum output guarantee extended to all `generative_field_keys`
 
 **Problem**: Run 6 of Round 5 — WB format with `detailed_tasks` in
 `generative_field_keys`. A4 produced 0 entries despite Fix 8 Part 2's minimum
@@ -56,10 +56,10 @@ the updated guarantee language.
 
 ---
 
-### Fix Y — A2 `scoring_keywords` prompt fix for PDF ToR input
+### R6-D — A2 `scoring_keywords` prompt fix for PDF ToR input
 
 **Problem**: Round 5 Run 4 (PDF ToR) — all three `scoring_keywords` lists empty
-despite rich ToR content. Round 5 Run 5 (non-PDF ToR) confirmed Fix 4b working
+despite rich ToR content. Round 5 Run 5 (non-PDF ToR) confirmed R5-A working
 correctly — the issue is PDF-specific, likely due to the extraction instruction
 being deprioritised on long inputs or PDF text layout affecting A2's parsing.
 
@@ -71,7 +71,7 @@ change.
   so it is not deprioritised when input is long.
 - Add explicit instruction that `scoring_keywords` must be populated regardless
   of input format (PDF or docx) and input length.
-- Wire a soft-flag warning via Fix 5b's `check_content_reviewer_warnings`
+- Wire a soft-flag warning via R5-D's `check_content_reviewer_warnings`
   equivalent: if all three keyword lists are empty after A2, append a manifest
   warning.
 
@@ -80,7 +80,7 @@ and non-empty guarantee tests.
 
 ---
 
-### Fix AB — Employment-only fallback routing to project-overview fields
+### R6-G — Employment-only fallback routing to project-overview fields
 
 **Problem**: Round 6 Run 4 (Jennifer Garvey, GIZ, South Africa ToR) —
 `relevant_projects` was empty while `employment_record` contained rich entries.
@@ -114,9 +114,9 @@ insufficient project evidence for strong generation.
 Pending calibration data (5+ clean rendered outputs per template). See
 `COMPRESSION_CALIBRATION_CONTEXT.md`.
 
-### Fix 4 threshold recalibration
+### R5-B threshold recalibration
 Review `MIN_PROJECTS_TO_KEEP` and `MAX_PROJECTS_TO_KEEP` constants (currently
-`MIN=5`, `MAX=15` in code) once Fix 4 scoring produces a stable distribution
+`MIN=5`, `MAX=15` in code) once R5-B scoring produces a stable distribution
 across sufficient production runs.
 
 ---
@@ -125,25 +125,25 @@ across sufficient production runs.
 
 | File | Planned change |
 |------|---------------|
-| `pipeline/agents/compressor.py` | Fix Z: `A6_INPUT_PROJECT_WORD_CAP` constant; `_truncate_project_text_for_a6` helper; called pre-assembly in `run()`. |
-| `pipeline/agents/fields_generator.py` | Fix AA: extend `### Minimum output guarantee` in `SYSTEM_PROMPT_A4`. |
-| `pipeline/agents/cv_extractor.py` | Fix V + Fix W: extend `SYSTEM_PROMPT_A1` with merged-cell extraction and date ordering validation. |
-| `pipeline/agents/tor_summarizer.py` | Fix Y: reorder `SYSTEM_PROMPT_A2`; strengthen `scoring_keywords` guarantee. |
-| `tests/test_compressor_text_cap.py` | **New file.** Fix Z tests. |
-| `tests/test_fields_generator_prompt.py` | Fix AA: new prompt marker test. |
-| `tests/test_cv_extractor_prompt.py` | Fix V + Fix W: new prompt instruction tests. |
-| `tests/test_tor_summarizer_prompt.py` | Fix Y: new position and guarantee tests. |
+| `pipeline/agents/compressor.py` | R6-E: `A6_INPUT_PROJECT_WORD_CAP` constant; `_truncate_project_text_for_a6` helper; called pre-assembly in `run()`. |
+| `pipeline/agents/fields_generator.py` | R6-F: extend `### Minimum output guarantee` in `SYSTEM_PROMPT_A4`. |
+| `pipeline/agents/cv_extractor.py` | R6-A + R6-B: extend `SYSTEM_PROMPT_A1` with merged-cell extraction and date ordering validation. |
+| `pipeline/agents/tor_summarizer.py` | R6-D: reorder `SYSTEM_PROMPT_A2`; strengthen `scoring_keywords` guarantee. |
+| `tests/test_compressor_text_cap.py` | **New file.** R6-E tests. |
+| `tests/test_fields_generator_prompt.py` | R6-F: new prompt marker test. |
+| `tests/test_cv_extractor_prompt.py` | R6-A + R6-B: new prompt instruction tests. |
+| `tests/test_tor_summarizer_prompt.py` | R6-D: new position and guarantee tests. |
 
 ---
 
 ## Implementation sequence
 
-1. ✓ Fix Z — compressor word cap (hard failure — highest priority).
-2. ✓ Fix AA — A4 minimum output guarantee for all `generative_field_keys`.
-3. ✓ Fix V — A1 merged-cell project name extraction.
-4. ✓ Fix W — A1 date inversion auto-correct across all four date-field types.
-5. ✓ Fix Y — A2 `scoring_keywords` prompt fix + soft-flag validator.
-6. ✓ Fix AB — A1 employment-only fallback mapping + Python safety net alignment.
+1. ✓ R6-E — compressor word cap (hard failure — highest priority).
+2. ✓ R6-F — A4 minimum output guarantee for all `generative_field_keys`.
+3. ✓ R6-A — A1 merged-cell project name extraction.
+4. ✓ R6-B — A1 date inversion auto-correct across all four date-field types.
+5. ✓ R6-D — A2 `scoring_keywords` prompt fix + soft-flag validator.
+6. ✓ R6-G — A1 employment-only fallback mapping + Python safety net alignment.
 
 ---
 
@@ -151,18 +151,18 @@ across sufficient production runs.
 
 | File | Step | Nature |
 |------|------|--------|
-| `pipeline/agents/compressor.py` | Fix Z | `A6_INPUT_PROJECT_WORD_CAP`, `_A6_CAPPED_FIELDS`, `_truncate_project_text_for_a6`; call site in `run()`; `append_warning` calls for truncation events; `copy` + `append_warning` imports |
-| `pipeline/agents/fields_generator.py` | Fix AA | `SYSTEM_PROMPT_A4` minimum guarantee — explicit `detailed_tasks` example + geographic exemption rule |
-| `pipeline/agents/cv_extractor.py` | Fix V, Fix W | `SYSTEM_PROMPT_A1` — `### Merged-cell and two-column project tables`; `### Date ordering validation` |
-| `pipeline/agents/tor_summarizer.py` | Fix Y | `SYSTEM_PROMPT_A2` — `### scoring_keywords` moved to after `### position_title`; non-empty guarantee added |
-| `pipeline/validators.py` | Fix Y | `check_tor_summarizer_warnings` function added |
-| `pipeline/orchestrator.py` | Fix Y | `check_tor_summarizer_warnings` imported and wired in `run_phase1` |
-| `tests/test_compressor_text_cap.py` | Fix Z | **New file.** 12 tests |
-| `tests/test_fields_generator_prompt.py` | Fix AA | 2 new tests |
-| `tests/test_cv_extractor_prompt.py` | Fix V, Fix W | 6 new tests |
-| `tests/test_tor_summarizer_prompt.py` | Fix Y | 2 new tests |
-| `tests/test_validators.py` | Fix Y | 6 new tests (`TestCheckTorSummarizerWarnings`) |
-| `tests/test_employment_fallback.py` | Fix AB | **New file.** 20 tests for `_apply_employment_fallback` mapping, warning text, and idempotence |
+| `pipeline/agents/compressor.py` | R6-E | `A6_INPUT_PROJECT_WORD_CAP`, `_A6_CAPPED_FIELDS`, `_truncate_project_text_for_a6`; call site in `run()`; `append_warning` calls for truncation events; `copy` + `append_warning` imports |
+| `pipeline/agents/fields_generator.py` | R6-F | `SYSTEM_PROMPT_A4` minimum guarantee — explicit `detailed_tasks` example + geographic exemption rule |
+| `pipeline/agents/cv_extractor.py` | R6-A, R6-B | `SYSTEM_PROMPT_A1` — `### Merged-cell and two-column project tables`; `### Date ordering validation` |
+| `pipeline/agents/tor_summarizer.py` | R6-D | `SYSTEM_PROMPT_A2` — `### scoring_keywords` moved to after `### position_title`; non-empty guarantee added |
+| `pipeline/validators.py` | R6-D | `check_tor_summarizer_warnings` function added |
+| `pipeline/orchestrator.py` | R6-D | `check_tor_summarizer_warnings` imported and wired in `run_phase1` |
+| `tests/test_compressor_text_cap.py` | R6-E | **New file.** 12 tests |
+| `tests/test_fields_generator_prompt.py` | R6-F | 2 new tests |
+| `tests/test_cv_extractor_prompt.py` | R6-A, R6-B | 6 new tests |
+| `tests/test_tor_summarizer_prompt.py` | R6-D | 2 new tests |
+| `tests/test_validators.py` | R6-D | 6 new tests (`TestCheckTorSummarizerWarnings`) |
+| `tests/test_employment_fallback.py` | R6-G | **New file.** 20 tests for `_apply_employment_fallback` mapping, warning text, and idempotence |
 | `additions/PIPELINE_DIAGNOSTIC_CONTEXT.md` | Docs | Status, fix table, sequence, round summary updated |
 | `additions/PIPELINE_DIAGNOSTIC_ROUND_6.md` | Docs | This file — status updated to Complete |
 | `markdowns/PROMPT_REVIEW_CONTEXT.md` | Docs | 6 new rows + §7 updated |
@@ -174,22 +174,22 @@ across sufficient production runs.
 
 ## Test results
 
-461/461 passing (48 new tests added: 12 Fix Z, 2 Fix AA, 6 Fix V+W, 2 Fix Y prompt, 6 Fix Y validator, 20 Fix AB fallback).
+461/461 passing (48 new tests added: 12 R6-E, 2 R6-F, 6 R6-A+W, 2 R6-D prompt, 6 R6-D validator, 20 R6-G fallback).
 
 ---
 
 ## Design decisions recorded
 
-1. **Fix Z — truncate-and-warn**: Information beyond 150 words per dense field is permanently excluded from A6's compression scope. The manifest soft-flag warning (`input_field_truncated`) surfaces every truncation event. No restore step (A6 is supposed to compress these fields). `append_warning` called directly from `compressor.run()`.
+1. **R6-E — truncate-and-warn**: Information beyond 150 words per dense field is permanently excluded from A6's compression scope. The manifest soft-flag warning (`input_field_truncated`) surfaces every truncation event. No restore step (A6 is supposed to compress these fields). `append_warning` called directly from `compressor.run()`.
 
-2. **Fix AA — targeted reinforcement only**: Kept existing guarantee language; added explicit bullet for `detailed_tasks` and a statement that geographic/alignment weakness does not exempt any key.
+2. **R6-F — targeted reinforcement only**: Kept existing guarantee language; added explicit bullet for `detailed_tasks` and a statement that geographic/alignment weakness does not exempt any key.
 
-3. **Fix V — empty with warning, no fabrication**: Leave `project_name = ""` when not determinable + emit `extraction_warnings` entry. No fabrication.
+3. **R6-A — empty with warning, no fabrication**: Leave `project_name = ""` when not determinable + emit `extraction_warnings` entry. No fabrication.
 
-4. **Fix W — all four field types covered**: Date inversion check and auto-correct applied to all `date_from`/`date_to` pairs: `relevant_projects[]`, `education[]`, `employment_record[]`, `countries_of_experience[]`. "Present" always sorts later than any literal date.
+4. **R6-B — all four field types covered**: Date inversion check and auto-correct applied to all `date_from`/`date_to` pairs: `relevant_projects[]`, `education[]`, `employment_record[]`, `countries_of_experience[]`. "Present" always sorts later than any literal date.
 
-5. **Fix Y — new validator function**: `check_tor_summarizer_warnings` added to `pipeline/validators.py`; wired in `run_phase1` after `tor_summarizer.run`.
-6. **Fix AB — preserve renderer paragraph semantics**: Employment fallback now
+5. **R6-D — new validator function**: `check_tor_summarizer_warnings` added to `pipeline/validators.py`; wired in `run_phase1` after `tor_summarizer.run`.
+6. **R6-G — preserve renderer paragraph semantics**: Employment fallback now
    maps descriptive employment text to `main_project_features` (project overview)
    and leaves `activities_performed` empty (candidate-actions paragraph). This
    aligns fallback output with template paragraph ordering and prevents rich
@@ -201,7 +201,7 @@ across sufficient production runs.
 
 - Round 6 Run 4 surfaced Issue AB: employment-only CVs produced
   `relevant_projects: []`, causing blank rendered project sections.
-- Fix AB implemented in Round 6: A1 prompt fallback + Python safety net now
+- R6-G implemented in Round 6: A1 prompt fallback + Python safety net now
   dual-populate `relevant_projects` from `employment_record` using
   `description → main_project_features`.
 - Validation expectation after fix: employment-only CVs now produce scored
@@ -213,4 +213,4 @@ across sufficient production runs.
 
 - **Issue AB** — No relevant projects when CV uses employment-only format.
   Root cause: A3 scored only `relevant_projects` while A1 had routed content to
-  `employment_record`. Resolution implemented in this round via Fix AB.
+  `employment_record`. Resolution implemented in this round via R6-G.

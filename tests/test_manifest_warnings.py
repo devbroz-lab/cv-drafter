@@ -1,5 +1,5 @@
 """
-Tests for pipeline/manifest.py append_warning helper (Fix 5b — Round 5).
+Tests for pipeline/manifest.py append_warning helper (R5-D — Round 5).
 
 Verifies:
   - append_warning creates the 'warnings' key when absent.

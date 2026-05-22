@@ -261,7 +261,7 @@ def run(
     manifest_raw = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     donor = manifest_raw.get("params", {}).get("donor", "").strip().lower().replace(" ", "_")
 
-    # Fix LL: donor-aware exclusion of activities_performed for GIZ.
+    # R7-L: donor-aware exclusion of activities_performed for GIZ.
     # The GIZ renderer never places activities_performed in any table cell, so
     # compressing it wastes A6's budget on content that won't appear in the output.
     # For WB runs, activities_performed IS rendered, so it remains compressible.
@@ -335,10 +335,10 @@ def run(
         update_step(run_dir, "compressor", "failed")
         raise ValueError(f"Compressor returned invalid output: {exc}\n\nRaw:\n{raw}") from exc
 
-    # Fix LL (post-A6): restore activities_performed from cv_data_in for GIZ runs.
+    # R7-L (post-A6): restore activities_performed from cv_data_in for GIZ runs.
     # A6 never saw or compressed activities_performed for GIZ (it was cleared
     # in cv_data_for_a6), so the original values from cv_data_in are the source
-    # of truth. Match by project index (safe because Fix EE guarantees stable
+    # of truth. Match by project index (safe because R7-B guarantees stable
     # ordering in mapped_cv.json before A4 runs, and A6 must not reorder projects).
     if donor == "giz":
         out_projects = cv_data_out_raw.get("relevant_projects", [])

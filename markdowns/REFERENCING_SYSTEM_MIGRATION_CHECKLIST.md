@@ -82,7 +82,7 @@ Acceptance:
 
 ## Phase 3 — Correct Locator->DotPath Mapping (Especially WB)
 
-### 6. Fix WB employment mapping to match template composition
+### 6. WB employment mapping to match template composition
 
 `locatorToDotPath.ts` assumptions are currently too granular for WB employment cells.
 
@@ -92,7 +92,7 @@ Acceptance:
 Acceptance:
 - Employment-cell clicks produce resolvable field paths or explicit fallback.
 
-### 7. Fix WB relevant-projects mapping for composite cells
+### 7. WB relevant-projects mapping for composite cells
 
 - Reflect that WB project cells are composite in template expansion.
 - Avoid pretending each visible fragment is a unique scalar if it is not.

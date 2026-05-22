@@ -168,7 +168,7 @@ def validate_fields_generator_output(run_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fix 5b — Soft-flag check functions (Round 5)
+# R5-D — Soft-flag check functions (Round 5)
 # ---------------------------------------------------------------------------
 
 # Threshold: more than this many generation_warnings is flagged as a soft concern.
@@ -374,7 +374,7 @@ def check_compressor_warnings(run_dir: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Fix Y — Soft-flag check function (Round 6)
+# R6-D — Soft-flag check function (Round 6)
 # ---------------------------------------------------------------------------
 
 

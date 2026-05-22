@@ -1,5 +1,5 @@
 """
-Tests for Fix 8 Part 2 + Fix K — SYSTEM_PROMPT_A4 priority and minimum-output
+Tests for Fix 8 Part 2 — SYSTEM_PROMPT_A4 priority and minimum-output
 guarantee instructions.
 
 These tests do NOT call the LLM.  They assert that the required marker phrases
@@ -73,7 +73,7 @@ class TestSystemPromptA4MinimumOutputGuarantee:
 
 
 class TestSystemPromptA4SourcePreference:
-    """Fix P — source-preference section must be present in SYSTEM_PROMPT_A4."""
+    """R4-C — source-preference section must be present in SYSTEM_PROMPT_A4."""
 
     def test_source_preference_section_present(self):
         assert "Source preference" in SYSTEM_PROMPT_A4 or \

@@ -1,15 +1,15 @@
 """
-Tests for Fix J + Fix 8 Part 1 + Fix N + Fix 4 + Fix PP-B + Fix RR in
+Tests for Fix J + Fix 8 Part 1 + R4-A + R5-B + R7.5-D + R7.5-G in
 pipeline/agents/cv_tor_mapper.py.
 
 Fix J        — Python post-processing drops projects below the dynamic threshold.
 Fix 8 Part 1 — Python truncates the kept set to MAX_PROJECTS_TO_KEEP.
-Fix N        — Constants recalibrated; dynamic floor clamped to total.
-Fix 4        — Python relevance scoring via _precompute_relevance_scores;
+R4-A        — Constants recalibrated; dynamic floor clamped to total.
+R5-B        — Python relevance scoring via _precompute_relevance_scores;
                duration pre-compute moved upstream to cv_tor_mapper.
-Fix PP-A     — MIN=10, MAX=30 constants (Round 7.5).
-Fix PP-B     — _protect_current_role: restore dropped Present project after cap.
-Fix RR       — _sort_by_date_desc: primary_key="date_to" for countries.
+R7.5-C     — MIN=10, MAX=30 constants (Round 7.5).
+R7.5-D     — _protect_current_role: restore dropped Present project after cap.
+R7.5-G       — _sort_by_date_desc: primary_key="date_to" for countries.
 
 Tests use internal helpers directly. No LLM calls.
 """
@@ -368,7 +368,7 @@ class TestComposition:
 
 
 # ---------------------------------------------------------------------------
-# Fix 4 — _precompute_relevance_scores
+# R5-B — _precompute_relevance_scores
 # ---------------------------------------------------------------------------
 
 class TestPrecomputeRelevanceScores:
@@ -483,7 +483,7 @@ class TestSystemPromptA3JsonOnly:
 
 
 # ---------------------------------------------------------------------------
-# Fix PP-A — MIN/MAX constant values (Round 7.5)
+# R7.5-C — MIN/MAX constant values (Round 7.5)
 # ---------------------------------------------------------------------------
 
 class TestPPAConstants:
@@ -495,7 +495,7 @@ class TestPPAConstants:
 
 
 # ---------------------------------------------------------------------------
-# Fix PP-B — _protect_current_role (Round 7.5)
+# R7.5-D — _protect_current_role (Round 7.5)
 # ---------------------------------------------------------------------------
 
 def _make_full_parsed(scores: list[dict], original_projects: list[dict]) -> dict:
@@ -598,7 +598,7 @@ class TestProtectCurrentRole:
 
         warnings = parsed["alignment"]["warnings"]
         assert len(warnings) == 1
-        assert "PP-B" in warnings[0]
+        assert "R7.5-D" in warnings[0]
         assert "CurrentRole" in warnings[0]
 
     def test_case_insensitive_present_detection(self):
@@ -613,7 +613,7 @@ class TestProtectCurrentRole:
 
 
 # ---------------------------------------------------------------------------
-# Fix RR — _sort_by_date_desc primary_key="date_to" (Round 7.5)
+# R7.5-G — _sort_by_date_desc primary_key="date_to" (Round 7.5)
 # ---------------------------------------------------------------------------
 
 class TestSortByDateDescRR:

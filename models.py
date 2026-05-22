@@ -467,7 +467,7 @@ class Competency(BaseModel):
 class ScoringKeywords(BaseModel):
     """
     Keyword sets extracted/inferred by Agent 2 (ToR Summarizer) from the ToR
-    document.  Consumed by Agent 3's Python relevance scorer (Fix 4).
+    document.  Consumed by Agent 3's Python relevance scorer (R5-B).
 
     Three lists capture different sources of keyword signal:
     - role_implied  : terms a qualified expert in this role would routinely work
@@ -548,7 +548,7 @@ class DistilledToR(BaseModel):
     scoring_keywords: ScoringKeywords = Field(
         default_factory=ScoringKeywords,
         description=(
-            "Keyword sets for Fix 4 Python relevance scoring. Populated by A2 "
+            "Keyword sets for R5-B Python relevance scoring. Populated by A2 "
             "from position title, scope, and explicit ToR statements. Empty lists "
             "when the source text is absent. Visible in tor_data.json for audit."
         ),
