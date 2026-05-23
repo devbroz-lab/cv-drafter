@@ -14,6 +14,7 @@ _DEFAULT_ALLOWED_EMAILS = frozenset(
         "daksh.suryavanshi2003@gmail.com",
         "qamarali9584@gmail.com",
         "yashs9131@gmail.com",
+        "mohdazam0453@gmail.com",
     }
 )
 
