@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     refresh_token_expires_days: int = 7
     google_client_id: str = ""
     microsoft_client_id: str = ""
+    # Comma-separated emails allowed to register/login. Empty = built-in beta list.
+    auth_email_allowlist: str = ""
     debug: bool = False
 
     # Anthropic — required for the 6-agent CV pipeline

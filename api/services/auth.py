@@ -18,6 +18,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token as google_id_token
 
 from api.config import settings
+from api.services.email_allowlist import normalize_email, require_allowed_email
 from api.services.database import (
     create_app_user,
     delete_refresh_token,
@@ -116,6 +117,8 @@ def _issue_user_tokens(user: dict[str, Any]) -> dict[str, Any]:
 
 
 def register_with_email(email: str, password: str) -> dict[str, Any]:
+    email = normalize_email(email)
+    require_allowed_email(email)
     existing = get_app_user_by_email(email)
     if existing:
         raise HTTPException(
@@ -131,6 +134,8 @@ def register_with_email(email: str, password: str) -> dict[str, Any]:
 
 
 def login_with_email(email: str, password: str) -> dict[str, Any]:
+    email = normalize_email(email)
+    require_allowed_email(email)
     user = get_app_user_by_email(email)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
@@ -170,7 +175,7 @@ def login_with_google(id_token: str) -> dict[str, Any]:
             detail=detail,
         ) from exc
 
-    email = str(payload.get("email") or "").lower()
+    email = normalize_email(str(payload.get("email") or ""))
     google_id = str(payload.get("sub") or "")
     if not email or not google_id:
         raise HTTPException(
@@ -178,6 +183,7 @@ def login_with_google(id_token: str) -> dict[str, Any]:
             detail="Google account is missing required fields",
         )
 
+    require_allowed_email(email)
     user = get_app_user_by_email(email)
     if not user:
         user = create_app_user(email=email, password_hash=None, google_id=google_id)
@@ -209,18 +215,21 @@ def login_with_microsoft(id_token: str) -> dict[str, Any]:
             detail="Invalid Microsoft token",
         ) from exc
 
-    email = str(
-        payload.get("email")
-        or payload.get("preferred_username")
-        or payload.get("upn")
-        or ""
-    ).lower()
+    email = normalize_email(
+        str(
+            payload.get("email")
+            or payload.get("preferred_username")
+            or payload.get("upn")
+            or ""
+        )
+    )
     if not email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Microsoft account is missing required fields",
         )
 
+    require_allowed_email(email)
     user = get_app_user_by_email(email)
     if not user:
         user = create_app_user(email=email, password_hash=None, google_id=None)
@@ -244,6 +253,7 @@ def refresh_access(refresh_token: str) -> str:
     user = get_app_user_by_id(str(payload["sub"]))
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    require_allowed_email(str(user["email"]))
     return generate_access_token(str(user["id"]), str(user["email"]))
 
 
@@ -264,11 +274,15 @@ def get_current_user(
     token = credentials.credentials
     try:
         app_payload = verify_access_token(token)
+        email = str(app_payload.get("email") or "")
+        require_allowed_email(email)
         return AuthenticatedUser(
             user_id=str(app_payload["sub"]),
-            email=str(app_payload.get("email") or ""),
+            email=email,
             auth_provider="app",
         )
+    except HTTPException:
+        raise
     except Exception:
         # Backward compatibility path: still accept Supabase access tokens
         # so live clients are not broken while auth migration is in progress.
@@ -292,8 +306,11 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    supabase_email = getattr(user, "email", None)
+    if supabase_email:
+        require_allowed_email(str(supabase_email))
     return AuthenticatedUser(
         user_id=str(user_id),
-        email=getattr(user, "email", None),
+        email=supabase_email,
         auth_provider="supabase",
     )
