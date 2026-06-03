@@ -655,12 +655,13 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
         f"<pre_computed>\n{json.dumps(pre_computed, indent=2)}\n</pre_computed>"
     )
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=ANTHROPIC_MODEL,
         max_tokens=ANTHROPIC_MAX_TOKENS,
         system=SYSTEM_PROMPT_A5,
         messages=[{"role": "user", "content": user_message}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     if response.stop_reason == "max_tokens":
         update_step(run_dir, "content_reviewer", "failed")

@@ -18,7 +18,7 @@ from anthropic import Anthropic
 import copy
 
 from models import FORMAT_PROFILES, CVData
-from pipeline.config import ANTHROPIC_SYNTHESIS_MODEL
+from pipeline.config import ANTHROPIC_SYNTHESIS_MODEL, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import update_step
 from pipeline.precompute_utils import compute_project_duration, compute_project_year
 from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
@@ -124,6 +124,17 @@ For each RelevantProject, fill only fields that are empty string "":
   modify, or derive your own duration value.
 - `year`: the pipeline has pre-computed this value as well. Copy it exactly
   as received — do NOT recalculate or derive your own year string.
+- `main_project_features`: if empty AND `activities_performed` is populated,
+  synthesise a project overview from the available metadata (`project_name`,
+  `company`, `location`, `date_from`, `date_to`) and any programme-level
+  context inferable from the project name and ToR background. The overview
+  must describe what the project is — its objective, sector, and scope —
+  not what the candidate did. Never duplicate content from
+  `activities_performed`. Scale length proportionally to available metadata:
+  rich metadata (named programme, known client, clear sector) warrants 2–3
+  sentences; sparse metadata warrants 1 sentence. If both `main_project_features`
+  AND `activities_performed` are empty, leave `main_project_features` as "".
+  If `main_project_features` is already populated, leave it unchanged.
 - All other project fields: never fill — if empty, leave empty.
 
 ### All other CVData fields
@@ -387,12 +398,13 @@ def run(run_dir: Path) -> CVData:
         f"<params>\n{json.dumps(params, indent=2)}\n</params>"
     )
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=ANTHROPIC_SYNTHESIS_MODEL,
-        max_tokens=16000,
+        max_tokens=ANTHROPIC_MAX_TOKENS,
         system=SYSTEM_PROMPT_A4,
         messages=[{"role": "user", "content": user_message}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     if response.stop_reason == "max_tokens":
         update_step(run_dir, "fields_generator", "failed")

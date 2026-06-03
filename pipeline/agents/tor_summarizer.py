@@ -16,7 +16,7 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import DistilledToR
-from pipeline.config import ANTHROPIC_MODEL
+from pipeline.config import ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import update_step
 from pipeline.utils import extract_json_object, strip_code_fences
 
@@ -220,12 +220,13 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
         )
     )
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=ANTHROPIC_MODEL,
-        max_tokens=16000,
+        max_tokens=ANTHROPIC_MAX_TOKENS,
         system=_build_prompt(SYSTEM_PROMPT_A2),
         messages=[{"role": "user", "content": content}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     if response.stop_reason == "max_tokens":
         update_step(run_dir, "tor_summarizer", "failed")

@@ -18,6 +18,7 @@ from __future__ import annotations
 # claude-sonnet-4-6 provides a 1M token context window (vs 200k), resolving A1
 # context exhaustion on large CVs with long prompts. Same pricing tier; faster.
 ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
+ANTHROPIC_MODEL_EXTRACTOR: str = "claude-opus-4-8"
 
 # Model for Agent 4 (Fields Generator) — the sole generative synthesis agent.
 # A4 must reason across four dense input blocks simultaneously to produce
@@ -27,7 +28,7 @@ ANTHROPIC_SYNTHESIS_MODEL: str = "claude-sonnet-4-6"
 
 # Hard token cap for content_reviewer LLM call.  The reviewer outputs the full
 # CVData + review block, so this needs to be generous.
-ANTHROPIC_MAX_TOKENS: int = 16000
+ANTHROPIC_MAX_TOKENS: int = 32000
 
 # ---------------------------------------------------------------------------
 # Content reviewer — post-processing thresholds

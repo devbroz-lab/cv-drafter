@@ -16,7 +16,7 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import CVData, RelevantProject
-from pipeline.config import ANTHROPIC_MODEL
+from pipeline.config import ANTHROPIC_MODEL_EXTRACTOR, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import update_step
 from pipeline.utils import extract_json_object, strip_code_fences
 from pipeline.utils.cefr import map_cefr, map_numeric_scale_inverted
@@ -111,6 +111,44 @@ for the matching format below.
   separate date fields.
 - It is normal for a single employer period to contain multiple projects —
   extract all of them into `relevant_projects`.
+
+### Project description field split (all formats)
+
+For every RelevantProject entry extracted from a dedicated project table or
+project section, split the source description content between the two
+description fields as follows:
+
+- `main_project_features` → the PROJECT context: what the assignment is,
+  its objective, scope, sector, geographic coverage, and the client/donor
+  programme it sits within. This is background that describes the project
+  itself, not the candidate's role. Typically found at the start of a
+  description block, or in a dedicated "Project Background" / "Objective"
+  sub-field.
+
+- `activities_performed` → the CANDIDATE's actions: what this specific
+  expert did, their responsibilities, deliverables, and tasks. These are
+  action-led statements ("Develop...", "Assess...", "Provide...",
+  "Draft...") that describe the candidate's contribution, not the project
+  in general.
+
+**When the source description is a combined block with no structural
+separation** (i.e. a single prose or bullet-list paragraph mixing project
+context and candidate tasks):
+- Assign context-setting sentences (project purpose, programme name,
+  geographic scope, client objectives) to `main_project_features`.
+- Assign action-led sentences and task lists to `activities_performed`.
+- If the entire description is task-only (all sentences are action-led
+  with no project context), leave `main_project_features` as "" and put
+  everything in `activities_performed`.
+- If the entire description is context-only (no candidate actions
+  mentioned), put everything in `main_project_features` and leave
+  `activities_performed` as "".
+- Never duplicate content across both fields.
+
+**This rule applies only to proper project entries** (from a
+`relevant_projects` table or project section). For the employment-only
+fallback, the mapping is fixed: `description → main_project_features`,
+`activities_performed` left as "".
 
 ### Employment-only fallback (all formats)
 
@@ -513,9 +551,9 @@ def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
     """
     update_step(run_dir, "cv_extractor", "running")
 
-    response = client.messages.create(
-        model=ANTHROPIC_MODEL,
-        max_tokens=16000,
+    with client.messages.stream(
+        model=ANTHROPIC_MODEL_EXTRACTOR,
+        max_tokens=ANTHROPIC_MAX_TOKENS,
         system=_build_prompt(SYSTEM_PROMPT_A1),
         messages=[
             {
@@ -527,7 +565,8 @@ def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
                 ),
             }
         ],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     if response.stop_reason == "max_tokens":
         update_step(run_dir, "cv_extractor", "failed")

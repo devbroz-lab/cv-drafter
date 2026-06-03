@@ -18,7 +18,7 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import CVData
-from pipeline.config import ANTHROPIC_MODEL
+from pipeline.config import ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import update_step
 from pipeline.precompute_utils import (
     _parse_date,
@@ -573,12 +573,13 @@ def run(run_dir: Path) -> dict:
         )
     )
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=ANTHROPIC_MODEL,
-        max_tokens=16000,
+        max_tokens=ANTHROPIC_MAX_TOKENS,
         system=SYSTEM_PROMPT_A3,
         messages=[{"role": "user", "content": user_message}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     if response.stop_reason == "max_tokens":
         update_step(run_dir, "cv_tor_mapper", "failed")

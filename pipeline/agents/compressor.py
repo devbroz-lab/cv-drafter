@@ -17,7 +17,7 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import CompressionResult, CVData
-from pipeline.config import ANTHROPIC_MODEL
+from pipeline.config import ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import append_warning, update_step
 
 from pipeline.precompute_utils import (
@@ -311,12 +311,13 @@ def run(
         f"<generation_warnings>\n{json.dumps(generation_warnings, indent=2)}\n</generation_warnings>"
     )
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=ANTHROPIC_MODEL,
-        max_tokens=16000,
+        max_tokens=ANTHROPIC_MAX_TOKENS,
         system=SYSTEM_PROMPT_A6,
         messages=[{"role": "user", "content": user_message}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     if response.stop_reason == "max_tokens":
         update_step(run_dir, "compressor", "failed")

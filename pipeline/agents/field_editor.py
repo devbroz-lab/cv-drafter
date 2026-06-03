@@ -43,15 +43,13 @@ from anthropic import Anthropic
 
 from pipeline.utils import strip_code_fences
 from pipeline.utils.cefr import map_cefr as _map_cefr
+from pipeline.config import ANTHROPIC_MODEL
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model — Dev 2's choice: Sonnet for editing quality
 # ---------------------------------------------------------------------------
-
-MODEL = "claude-sonnet-4-6"
-# MODEL = "claude-haiku-4-5-20251001"
 
 # ---------------------------------------------------------------------------
 # R7-I: RENDERER_FIELD_MAP — per-donor rendered project fields
@@ -644,8 +642,8 @@ def call_claude(
     Raises ValueError if the response cannot be parsed into either shape.
     """
     raw = client.messages.create(
-        model=MODEL,
-        max_tokens=1000,
+        model=ANTHROPIC_MODEL,
+        max_tokens=2000,
         system=SYSTEM_PROMPT_A7,
         messages=[
             {
