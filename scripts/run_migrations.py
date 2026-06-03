@@ -18,6 +18,7 @@ Usage:
   python scripts/run_migrations.py --dry-run
   python scripts/run_migrations.py
   python scripts/run_migrations.py --only 003_metering_tables
+  python scripts/run_migrations.py --mark-applied 000_sessions_table_schema
   python scripts/run_migrations.py --mark-applied 001_create_app_auth_tables
 """
 
@@ -161,7 +162,20 @@ def main() -> int:
     print(f"Migrations directory: {_MIGRATIONS_DIR}")
     print(f"Database host: {database_url.split('@')[-1].split('/')[0]}")
 
-    with psycopg.connect(database_url, autocommit=False) as conn:
+    try:
+        conn_ctx = psycopg.connect(database_url, autocommit=False)
+    except psycopg.OperationalError as exc:
+        if "getaddrinfo failed" in str(exc) or "failed to resolve host" in str(exc):
+            raise SystemExit(
+                "Cannot resolve the database host (DNS).\n"
+                "Fix: Supabase → Project Settings → Database → Connection string.\n"
+                "Copy the full URI (try **Session pooler** on port 5432 if "
+                "db.<ref>.supabase.co fails) into DATABASE_URL in .env.\n"
+                "Or run migrations manually in the SQL Editor (000 → 001 → 002 → 003)."
+            ) from exc
+        raise
+
+    with conn_ctx as conn:
         with conn.cursor() as cur:
             cur.execute(_BOOTSTRAP_SQL)
         conn.commit()

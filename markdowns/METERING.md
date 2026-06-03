@@ -37,10 +37,12 @@ python scripts/run_migrations.py --dry-run
 python scripts/run_migrations.py
 ```
 
-If auth migrations were already applied manually, mark them without re-running:
+Full order on a **new** project: `000` → `001` → `002` → `003` (see `api/migrations/`).
+
+If older steps were already applied manually, mark them without re-running:
 
 ```bash
-python scripts/run_migrations.py --mark-applied 001_create_app_auth_tables --mark-applied 002_sessions_user_fk_app_users
+python scripts/run_migrations.py --mark-applied 000_sessions_table_schema --mark-applied 001_create_app_auth_tables --mark-applied 002_sessions_user_fk_app_users
 python scripts/run_migrations.py --only 003_metering
 ```
 
