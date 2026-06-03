@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Example: "https://app.example.com,https://staging.example.com"
     cors_origins: str = "*"
 
+    # Metering — USD rates converted to credits via credit_usd_value (1 credit = $1 by default).
+    meter_credit_usd: float = 1.0
+    meter_pipeline_run_usd: float = 2.0
+    meter_revision_usd: float = 0.20
+    meter_initial_grant_credits: float = 20.0
+
     @field_validator("google_client_id", "microsoft_client_id", mode="before")
     @classmethod
     def _strip_oauth_client_ids(cls, value: object) -> object:
