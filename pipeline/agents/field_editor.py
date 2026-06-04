@@ -21,8 +21,8 @@ edits : list[dict]
 
 Returns
 -------
-applied : list[str]
-    Field paths where the edit was successfully written.
+applied : list[dict]
+    Each item is {"path", "instruction", "previous_value", "new_value"}.
 skipped : list[dict]
     Each item is {"path": str, "reason": str}. Reason is capped at
     200 characters with a trailing ellipsis if truncated. Pipeline
@@ -174,6 +174,12 @@ def _truncate_reason(reason: str) -> str:
     if len(reason) <= _SKIP_REASON_MAX_LEN:
         return reason
     return reason[: _SKIP_REASON_MAX_LEN - 1] + "\u2026"
+
+
+def _preview_value(value: object) -> str:
+    """Collapse whitespace and cap scalar values for API display."""
+    text = " ".join(str(value).split())
+    return _truncate_reason(text)
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +699,7 @@ def run_field_editor(
     *,
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[dict, list[str], list[dict]]:
+) -> tuple[dict, list[dict], list[dict]]:
     """
     Apply edits sequentially to a deep copy of `generated`.
 
@@ -728,7 +734,7 @@ def run_field_editor(
     """
     import copy
     mutated = copy.deepcopy(generated)
-    applied: list[str] = []
+    applied: list[dict] = []
     skipped: list[dict] = []
 
     for i, edit in enumerate(edits, start=1):
@@ -845,7 +851,14 @@ def run_field_editor(
             continue
 
         log.info("  applied '%s' → %s", field_path, new_value[:120])
-        applied.append(field_path)
+        applied.append(
+            {
+                "path": field_path,
+                "instruction": instruction,
+                "previous_value": _preview_value(current_value),
+                "new_value": _preview_value(new_value),
+            }
+        )
 
     return mutated, applied, skipped
 
@@ -860,7 +873,7 @@ def run(
     edits: list[dict],
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[list[str], list[dict]]:
+) -> tuple[list[dict], list[dict], str]:
     """
     Pipeline entry point called by the HTTP handler (POST /field-edit).
 

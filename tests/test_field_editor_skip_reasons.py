@@ -29,7 +29,11 @@ from pipeline.agents.field_editor import (
     _key_qualification_path_for_index,
     run_field_editor,
 )
-from api.models.requests import FieldEditItem, FieldEditResponse, FieldEditSkip
+from api.models.requests import FieldEditApplied, FieldEditItem, FieldEditResponse, FieldEditSkip
+
+
+def _applied_paths(applied):
+    return [item["path"] if isinstance(item, dict) else item for item in applied]
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +93,7 @@ class TestParagraphPlaceholderResolution:
         with patch("pipeline.agents.field_editor.call_claude") as m:
             m.return_value = {"action": "apply", "value": "Lead solar in Kenya."}
             mutated, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
-        assert applied == ["key_qualifications[0]"]
+        assert _applied_paths(applied) == ["key_qualifications[0]"]
         assert skipped == []
         assert mutated["key_qualifications"][0] == "Lead solar in Kenya."
 
@@ -97,7 +101,7 @@ class TestParagraphPlaceholderResolution:
         generated = {"key_qualifications": ["x"]}
         edits = [{"field_path": "paragraph_5", "instruction": "y"}]
         _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
-        assert applied == []
+        assert _applied_paths(applied) == []
         assert len(skipped) == 1
         assert "path resolution failed" in skipped[0]["reason"]
 
@@ -123,7 +127,7 @@ class TestPathResolutionFailureReason:
         generated = {"key_qualifications": ["bullet one"]}
         edits = [{"field_path": "nonexistent.path", "instruction": "rewrite"}]
         _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
-        assert applied == []
+        assert _applied_paths(applied) == []
         assert len(skipped) == 1
         assert skipped[0]["path"] == "nonexistent.path"
         assert "path resolution failed" in skipped[0]["reason"]
@@ -151,7 +155,7 @@ class TestNonScalarTargetReason:
         # Pointing to the list itself, not an element
         edits = [{"field_path": "key_qualifications", "instruction": "rewrite all"}]
         _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
-        assert applied == []
+        assert _applied_paths(applied) == []
         assert len(skipped) == 1
         assert skipped[0]["path"] == "key_qualifications"
         assert "not a scalar" in skipped[0]["reason"]
@@ -182,7 +186,7 @@ class TestApiErrorReason:
             mock_call.side_effect = RuntimeError("connection timeout")
             _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
 
-        assert applied == []
+        assert _applied_paths(applied) == []
         assert len(skipped) == 1
         assert skipped[0]["path"] == "key_qualifications[0]"
         assert "API or parse error" in skipped[0]["reason"]
@@ -215,7 +219,7 @@ class TestLlmSkipReason:
             mock_call.return_value = {"action": "skip", "reason": llm_reason}
             _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
 
-        assert applied == []
+        assert _applied_paths(applied) == []
         assert skipped[0]["path"] == "key_qualifications[0]"
         assert skipped[0]["reason"] == llm_reason  # short reason — not truncated
 
@@ -247,7 +251,7 @@ class TestWriteBackFailureReason:
                 mock_set.side_effect = KeyError("write exploded")
                 _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
 
-        assert applied == []
+        assert _applied_paths(applied) == []
         assert skipped[0]["path"] == "key_qualifications[0]"
         assert "write-back failed" in skipped[0]["reason"]
 
@@ -301,7 +305,7 @@ class TestSkipDictShape:
             m.return_value = {"action": "apply", "value": "new text"}
             _, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
         assert skipped == []
-        assert applied == ["key_qualifications[0]"]
+        assert _applied_paths(applied) == ["key_qualifications[0]"]
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +318,14 @@ class TestFieldEditResponseModel:
             session_id="abc123",
             status="checkpoint_3_pending",
             round=2,
-            applied=["relevant_projects[1].location"],
+            applied=[
+                FieldEditApplied(
+                    path="relevant_projects[1].location",
+                    instruction="Update location",
+                    previous_value="Nairobi",
+                    new_value="Kenya",
+                )
+            ],
             skipped=skipped,
             message="done",
             kq_source="ai_generated",
@@ -483,7 +494,7 @@ class TestParagraphPlaceholderResolutionWithGeneratedFields:
             m.return_value = {"action": "apply", "value": "Lead solar in Kenya."}
             mutated, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
 
-        assert applied == ["generated_fields[0].content"]
+        assert _applied_paths(applied) == ["generated_fields[0].content"]
         assert skipped == []
         assert mutated["generated_fields"][0]["content"] == "Lead solar in Kenya."
 
@@ -505,5 +516,5 @@ class TestParagraphPlaceholderResolutionWithGeneratedFields:
             m.return_value = {"action": "apply", "value": "Lead solar in Kenya."}
             mutated, applied, skipped = run_field_editor(generated, None, edits, MagicMock())
 
-        assert applied == ["key_qualifications[0]"]
+        assert _applied_paths(applied) == ["key_qualifications[0]"]
         assert skipped == []
