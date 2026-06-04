@@ -505,6 +505,14 @@ async def start_session_processing(
             detail="Source file must be uploaded before starting",
         )
 
+    from api.services.metering import InsufficientCreditsError, reserve_pipeline_run
+    from api.services.metering.http import raise_insufficient_credits
+
+    try:
+        reserve_pipeline_run(user_id=current_user.user_id, session_id=session_id)
+    except InsufficientCreditsError as exc:
+        raise_insufficient_credits(exc)
+
     from pipeline.orchestrator import run_phase1
 
     background_tasks.add_task(
@@ -1094,6 +1102,25 @@ async def submit_field_edits(
         for e in payload.edits
     ]
 
+    current_round = int(row.get("round") or 1)
+    billing_round = current_round + 1
+
+    from api.services.metering import (
+        InsufficientCreditsError,
+        debit_revision,
+        refund_revision,
+    )
+    from api.services.metering.http import raise_insufficient_credits
+
+    try:
+        debit_revision(
+            user_id=current_user.user_id,
+            session_id=session_id,
+            round_num=billing_round,
+        )
+    except InsufficientCreditsError as exc:
+        raise_insufficient_credits(exc)
+
     # Increment the round counter so the re-rendered output.docx gets the
     # correct label (round_02_giz.docx, round_03_giz.docx, …).
     new_round = increment_round(session_id)
@@ -1110,6 +1137,18 @@ async def submit_field_edits(
             session_id=session_id, edits=edits
         )
     except Exception as exc:
+        try:
+            refund_revision(
+                user_id=current_user.user_id,
+                session_id=session_id,
+                round_num=billing_round,
+            )
+        except Exception:
+            log.exception(
+                "Failed to refund revision credits for session %s round %s",
+                session_id,
+                billing_round,
+            )
         set_failed(session_id, str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

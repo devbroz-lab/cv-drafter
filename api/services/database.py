@@ -150,11 +150,23 @@ def set_done(session_id: str, output_storage_path: str) -> None:
         status="completed",
         output_file_path=output_storage_path,
     )
+    try:
+        from api.services.metering import commit_pipeline_run
+
+        commit_pipeline_run(session_id=session_id)
+    except Exception:
+        log.exception("Metering commit failed for session %s", session_id)
 
 
 def set_failed(session_id: str, error_message: str) -> None:
     """Transition a session to 'failed' and record the error reason."""
     update_session_row(session_id, status="failed", error_message=error_message)
+    try:
+        from api.services.metering import release_pipeline_reserve
+
+        release_pipeline_reserve(session_id)
+    except Exception:
+        log.exception("Metering release failed for session %s", session_id)
 
 
 def increment_round(session_id: str) -> int:
@@ -250,6 +262,14 @@ def reset_stale_processing_sessions() -> int:
     ]
     total = 0
     for stale_status in stale_statuses:
+        stale_rows = (
+            get_service_client()
+            .table("sessions")
+            .select("id")
+            .eq("status", stale_status)
+            .execute()
+        )
+        stale_ids = [str(r["id"]) for r in (stale_rows.data or [])]
         result = (
             get_service_client()
             .table("sessions")
@@ -258,6 +278,14 @@ def reset_stale_processing_sessions() -> int:
             .execute()
         )
         total += len(result.data) if result.data else 0
+        if stale_ids:
+            try:
+                from api.services.metering import release_pipeline_reserve
+
+                for session_id in stale_ids:
+                    release_pipeline_reserve(session_id)
+            except Exception:
+                log.exception("Metering release failed during stale session recovery")
     if total:
         log.warning("Startup recovery: reset %d stale session(s) to failed", total)
     return total
@@ -337,7 +365,14 @@ def create_app_user(
     result = get_service_client().table("app_users").insert(payload).execute()
     if not result.data:
         raise RuntimeError("Supabase insert returned no app_users row")
-    return result.data[0]
+    user = result.data[0]
+    try:
+        from api.services.metering import provision_new_user
+
+        provision_new_user(str(user["id"]))
+    except Exception:
+        log.exception("Failed to provision metering for user %s", user.get("id"))
+    return user
 
 
 def update_app_user(user_id: str, values: dict[str, Any]) -> dict[str, Any] | None:
