@@ -155,6 +155,20 @@ Do not merge to `main` until dev deploy and migrations (if any) are verified.
 
 ---
 
+## Railway: manifest / tor 404 while session is running
+
+Pipeline progress files (`manifest.json`, `tor_data.json`) are written under `runs/{session_id}/` on the API container. On Railway that disk is **ephemeral** and **not shared** between replicas.
+
+The API now **uploads** those files to Supabase Storage (`{session_id}/artifacts/…`) after each write and **hydrates** them on read. After deploying this change:
+
+1. Redeploy the **dev API** from `develop`.
+2. Start a **new** session on dev (old runs may never have been synced).
+3. Keep **one** API replica if possible (Settings → scale to 1) to reduce background-task vs. request split during a single run.
+
+If `GET …/manifest` still returns 404, check the response JSON `detail` and Railway logs for `Hydrated manifest` / upload warnings.
+
+---
+
 ## SQL migrations
 
 - **Dev Supabase:** run new migrations first (SQL Editor or `scripts/run_migrations.py` with dev `DATABASE_URL`).

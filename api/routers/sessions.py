@@ -640,8 +640,11 @@ async def get_session_manifest(
     from pipeline.manifest import load_manifest
     from pipeline.paths import get_run_dir
 
+    from api.services.run_artifacts import hydrate_run_artifact
+
     run_dir = get_run_dir(session_id)
-    if not run_dir.exists() or not (run_dir / "manifest.json").exists():
+    hydrate_run_artifact(session_id, run_dir, "manifest.json")
+    if not (run_dir / "manifest.json").is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Manifest not found — pipeline has not started yet",
@@ -695,11 +698,13 @@ async def get_tor_pools(
     """
     row = _require_owned_session(session_id, current_user.user_id)
 
+    from api.services.run_artifacts import hydrate_run_artifact
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "tor_data.json")
     tor_path = run_dir / "tor_data.json"
-    if not tor_path.exists():
+    if not tor_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="tor_data.json not found — ToR summarizer may not have completed yet",
@@ -746,11 +751,13 @@ async def select_tor_pool(
     """Persist selected_pool_index in runs/{session_id}/tor_data.json."""
     row = _require_owned_session(session_id, current_user.user_id)
 
+    from api.services.run_artifacts import hydrate_run_artifact, push_run_artifact
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "tor_data.json")
     tor_path = run_dir / "tor_data.json"
-    if not tor_path.exists():
+    if not tor_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="tor_data.json not found — ToR summarizer may not have completed yet",
@@ -771,6 +778,7 @@ async def select_tor_pool(
 
         tor_raw["selected_pool_index"] = selected_idx
         tor_path.write_text(json.dumps(tor_raw, indent=2, ensure_ascii=False), encoding=UTF_8)
+        push_run_artifact(session_id, tor_path)
         selected_pool = resolve_selected_tor_pool(
             tor_raw,
             context="api.sessions.select_tor_pool",
@@ -867,9 +875,12 @@ async def approve_checkpoint(
     if checkpoint == "checkpoint_1":
         from pipeline.paths import get_run_dir as _get_run_dir
 
+        from api.services.run_artifacts import hydrate_run_artifact
+
         _run_dir_c1 = _get_run_dir(session_id)
+        hydrate_run_artifact(session_id, _run_dir_c1, "tor_data.json")
         tor_path = _run_dir_c1 / "tor_data.json"
-        if not tor_path.exists():
+        if not tor_path.is_file():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="tor_data.json missing. Wait for checkpoint_1 artifacts before approval.",

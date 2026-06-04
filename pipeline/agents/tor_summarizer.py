@@ -11,7 +11,10 @@ Output: runs/{session_id}/tor_data.json
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from anthropic import Anthropic
 
@@ -256,10 +259,17 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
         "pools": [pool.model_dump() for pool in pools],
         "selected_pool_index": 0,
     }
-    (run_dir / "tor_data.json").write_text(
+    tor_path = run_dir / "tor_data.json"
+    tor_path.write_text(
         json.dumps(output, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, tor_path)
+    except Exception:
+        log.warning("tor_data Storage sync failed for %s", run_dir.name, exc_info=True)
 
     update_step(run_dir, "tor_summarizer", "done")
     return pools[0]
