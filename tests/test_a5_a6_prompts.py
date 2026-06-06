@@ -23,6 +23,10 @@ class TestSystemPromptA5JsonOnly:
     def test_first_char_rule_present(self):
         assert "FIRST non-whitespace" in SYSTEM_PROMPT_A5
 
+    def test_review_only_contract(self):
+        # A5 must NOT ask for a CVData echo; it returns only the review block.
+        assert "Return ONLY the `review`" in SYSTEM_PROMPT_A5
+
 
 # ---------------------------------------------------------------------------
 # A6 — Compressor
@@ -36,3 +40,7 @@ class TestSystemPromptA6JsonOnly:
 
     def test_first_char_rule_present(self):
         assert "FIRST non-whitespace" in SYSTEM_PROMPT_A6
+
+    def test_compressed_fields_patch_contract(self):
+        # A6 must return a compressed_fields patch, not a CVData echo.
+        assert "compressed_fields" in SYSTEM_PROMPT_A6
