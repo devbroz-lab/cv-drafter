@@ -414,6 +414,13 @@ Therefore:
 
 ## Inputs
 The user message will contain:
+  <run_date>            — the month and year this pipeline run was initiated.
+                          Use this as the reference point for all temporal
+                          reasoning. Do not rely on your training cutoff to
+                          assess whether dates are past, present, or future.
+                          A date_to value that appears to be in the future
+                          relative to your training data may be a past or
+                          current date relative to the actual run date.    </run_date>
   <cv_data>             — generated CVData from generated_fields.json    </cv_data>
   <tor_data>            — DistilledToR from tor_data.json                </tor_data>
   <generation_warnings> — warnings list from Agent 4                     </generation_warnings>
@@ -634,6 +641,7 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
     # Load manifest for params (needed for pre-computation)
     manifest_path = run_dir / "manifest.json"
     params: dict = {}
+    run_date: str = "unknown"
     if manifest_path.exists():
         try:
             manifest = load_json_file(
@@ -642,6 +650,10 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
                 required_keys=None,
             )
             params = manifest.get("params", {})
+            created_at_raw = manifest.get("created_at", "")
+            if created_at_raw:
+                from datetime import datetime
+                run_date = datetime.fromisoformat(created_at_raw).strftime("%B %Y")
         except Exception:
             pass
 
@@ -649,6 +661,7 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
     pre_computed = _precompute_context(cv_data_in, tor_data, params)
 
     user_message = (
+        f"<run_date>\n{run_date}\n</run_date>\n\n"
         f"<cv_data>\n{json.dumps(cv_data_in, indent=2)}\n</cv_data>\n\n"
         f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
         f"<generation_warnings>\n{json.dumps(generation_warns, indent=2)}\n</generation_warnings>\n\n"
