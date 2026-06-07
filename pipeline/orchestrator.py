@@ -50,10 +50,14 @@ from pipeline.extractor import extract_text
 from pipeline.manifest import append_warning, create_manifest, get_step_status, update_step
 from pipeline.validators import (
     PipelineValidationError,
+    alignment_warnings_for_manifest,
     check_compressor_warnings,
     check_content_reviewer_warnings,
     check_fields_generator_warnings,
     check_tor_summarizer_warnings,
+    extraction_warnings_for_manifest,
+    generation_warnings_for_manifest,
+    review_summary_for_manifest,
     validate_fields_generator_output,
 )
 from pipeline.paths import RUNS_ROOT, get_run_dir
@@ -85,6 +89,17 @@ def _run_if_needed(run_dir: Path, step_name: str, fn, *args, **kwargs) -> None:
     if get_step_status(run_dir, step_name) == "done":
         return
     fn(*args, **kwargs)
+
+
+def _emit_warnings(run_dir: Path, session_id: str, warns: list[dict]) -> None:
+    """Log + append a list of warning dicts to manifest.json (idempotent).
+
+    Used to stream agent warnings onto the polled /manifest channel as each
+    phase completes. ``append_warning`` de-dupes identical (stage, kind, message).
+    """
+    for w in warns:
+        log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
+        append_warning(run_dir, **w)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +183,9 @@ async def run_phase1(
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
 
+        # Stream A1 extraction warnings onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, extraction_warnings_for_manifest(run_dir))
+
         # ── Halt at checkpoint 1 ──────────────────────────────────────────
         update_step(run_dir, "checkpoint_1", "pending")
         set_checkpoint_pending(session_id, 1)
@@ -197,6 +215,10 @@ async def run_phase2(*, session_id: str) -> None:
 
     try:
         _run_if_needed(run_dir, "cv_tor_mapper", cv_tor_mapper.run, run_dir)
+
+        # Stream A3 alignment warnings onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, alignment_warnings_for_manifest(run_dir))
+
         update_step(run_dir, "checkpoint_2", "pending")
         set_checkpoint_pending(session_id, 2)
         log.info("Session %s reached checkpoint_2_pending", session_id)
@@ -249,6 +271,9 @@ async def run_phase3(*, session_id: str) -> None:
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
 
+        # Stream A4 raw generation warnings onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, generation_warnings_for_manifest(run_dir))
+
         if get_step_status(run_dir, "content_reviewer") != "done":
             _, passed = content_reviewer.run(run_dir)
             if not passed:
@@ -262,6 +287,9 @@ async def run_phase3(*, session_id: str) -> None:
         for w in check_content_reviewer_warnings(run_dir):
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
+
+        # Stream A5 review-findings summary onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, review_summary_for_manifest(run_dir))
 
         await _run_compressor_and_halt(session_id, run_dir)
 

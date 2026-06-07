@@ -206,6 +206,7 @@ class ResolveResponse(BaseModel):
 class ManifestStepResponse(BaseModel):
     name: str
     status: str
+    started_at: str | None = None  # ISO-8601, stamped when the step first runs
     completed_at: str | None = None
 
 
@@ -215,6 +216,13 @@ class ManifestResponse(BaseModel):
     steps: list[ManifestStepResponse]
     checkpoint_pending: str | None = None  # e.g. "checkpoint_1" if pending
     reviewer_blocked: bool = False
+    # Real-time progress signals for the polling UI (additive).
+    progress: int = 0  # 0–100 derived from step statuses
+    current_step: str | None = None  # name of the step currently in flight
+    # Agent warnings accumulated so far, streamed each poll (stage = step name).
+    # Forward-ref string + model_rebuild() at end of module (WarningEntry is
+    # defined later in this file).
+    warnings: list["WarningEntry"] = Field(default_factory=list)
 
 
 # ── ToR pool selection ────────────────────────────────────────────────────────
@@ -389,3 +397,8 @@ class WarningsResponse(BaseModel):
     counts: dict[str, int] = Field(
         description="Count of warnings per stage (keys: extraction, alignment, manifest, generation).",
     )
+
+
+# Resolve the forward reference in ManifestResponse.warnings now that
+# WarningEntry is defined above.
+ManifestResponse.model_rebuild()
