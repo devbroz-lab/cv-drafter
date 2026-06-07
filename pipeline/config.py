@@ -26,9 +26,24 @@ ANTHROPIC_MODEL_EXTRACTOR: str = "claude-opus-4-8"
 # Round 6: also upgraded to claude-sonnet-4-6 for the 1M context window.
 ANTHROPIC_SYNTHESIS_MODEL: str = "claude-sonnet-4-6"
 
-# Hard token cap for content_reviewer LLM call.  The reviewer outputs the full
-# CVData + review block, so this needs to be generous.
-ANTHROPIC_MAX_TOKENS: int = 32000
+# Output-token CEILINGS (not targets).  max_tokens is a hard cap the model is
+# NOT aware of, so raising it cannot, by itself, make outputs longer — it only
+# removes the truncation wall.  Output size is controlled separately by the
+# agent prompts (word limits, project caps, lean output contracts).
+#
+# claude-sonnet-4-6 max output = 64K; claude-opus-4-8 max output = 128K.  The
+# previous shared value of 32000 was roughly half of Sonnet's ceiling and a
+# quarter of Opus's, which truncated rich-CV runs (and produced malformed JSON
+# on near-limit outputs).  Both values stream (required for max_tokens > ~16K),
+# which every agent already does.
+#
+# Sonnet agents (A2, A3, A4, A5, A6): exactly Sonnet 4.6's output ceiling.
+ANTHROPIC_MAX_TOKENS: int = 64000
+
+# CV Extractor (A1) runs on Opus 4.8 (ANTHROPIC_MODEL_EXTRACTOR).  Opus supports
+# up to 128K output; 64000 is ample headroom for a single CVData extraction and
+# can be raised toward 128000 if an exceptionally large CV ever truncates.
+ANTHROPIC_MAX_TOKENS_EXTRACTOR: int = 64000
 
 # ---------------------------------------------------------------------------
 # Content reviewer — post-processing thresholds

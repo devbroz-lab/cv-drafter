@@ -9,3 +9,4 @@ from pipeline.utils._helpers import (  # noqa: F401
     resolve_tor_for_agents,
     strip_code_fences,
 )
+from pipeline.utils.llm import call_agent_json  # noqa: F401

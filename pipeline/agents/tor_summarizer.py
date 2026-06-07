@@ -21,7 +21,7 @@ from anthropic import Anthropic
 from models import DistilledToR
 from pipeline.config import ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import update_step
-from pipeline.utils import extract_json_object, strip_code_fences
+from pipeline.utils import call_agent_json
 
 client = Anthropic()
 
@@ -223,26 +223,23 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
         )
     )
 
-    with client.messages.stream(
-        model=ANTHROPIC_MODEL,
-        max_tokens=ANTHROPIC_MAX_TOKENS,
-        system=_build_prompt(SYSTEM_PROMPT_A2),
-        messages=[{"role": "user", "content": content}],
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "max_tokens":
-        update_step(run_dir, "tor_summarizer", "failed")
-        raise ValueError(
-            "ToR Summarizer response was truncated (max_tokens reached). "
-            "Increase max_tokens or reduce ToR length."
+    # A2's output (the pools array) is small and bounded; its input is raw ToR
+    # text it must summarise faithfully, so no reduce_input is supplied.
+    try:
+        parsed = call_agent_json(
+            client=client,
+            model=ANTHROPIC_MODEL,
+            max_tokens=ANTHROPIC_MAX_TOKENS,  # ceiling, not a target
+            system=_build_prompt(SYSTEM_PROMPT_A2),
+            user_message=content,
+            context="ToR Summarizer",
+            reduce_input=None,
         )
-
-    raw = strip_code_fences(response.content[0].text.strip())
-    raw = extract_json_object(raw)
+    except Exception as exc:
+        update_step(run_dir, "tor_summarizer", "failed")
+        raise
 
     try:
-        parsed = json.loads(raw)
         pools_raw = parsed.get("pools")
         if not isinstance(pools_raw, list) or len(pools_raw) == 0:
             raise ValueError("`pools` must be a non-empty list")
@@ -250,7 +247,7 @@ def run(run_dir: Path, tor_text: str) -> DistilledToR:
     except Exception as exc:
         update_step(run_dir, "tor_summarizer", "failed")
         raise ValueError(
-            f"ToR Summarizer returned invalid JSON: {exc}\n\nRaw output:\n{raw}"
+            f"ToR Summarizer returned invalid output: {exc}"
         ) from exc
 
     output = {

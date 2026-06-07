@@ -11,6 +11,7 @@ Output: runs/{session_id}/mapped_cv.json
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -28,8 +29,9 @@ from pipeline.precompute_utils import (
     compute_project_year,
     geography_score,
     keyword_overlap_score,
+    truncate_project_text,
 )
-from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
+from pipeline.utils import call_agent_json, resolve_tor_for_agents
 
 _PRESENT_RE = re.compile(r"\b(present|ongoing|current)\b", re.IGNORECASE)
 
@@ -43,12 +45,11 @@ client = Anthropic()
 MIN_PROJECTS_TO_KEEP: int = 10
 
 # Maximum number of projects passed to Agent 4.
-# Fix 8 Parts 2 and 3 (per-project text cap + prompt priority order) now protect
-# A4's token budget independently of project count, so this cap is raised to
-# preserve CV completeness for candidates with rich, relevant histories.
-# R7.5-C (Round 7.5): raised from 15 → 30. Interim values pending the page_limit-tied
-# formula deferred to Round 8 once larger sample size is available.
-MAX_PROJECTS_TO_KEEP: int = 30
+# Lowered from the R7.5-C value of 30 back to 15: with the Opus-4.8 extractor
+# producing richer, longer per-project text, a cap of 30 inflated A4/A5/A6 output
+# past the token budget (truncation + malformed JSON).  15 is the documented
+# pre-R7.5-C cap and the primary output-size lever.  Product-tunable.
+MAX_PROJECTS_TO_KEEP: int = 15
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +403,6 @@ alignment report.
 - The output must conform exactly to this structure:
 
 {
-  "data": { ...CVData object with filtered relevant_projects... },
   "alignment": {
     "kept_sections": [...],
     "dropped_sections": [...],
@@ -420,6 +420,15 @@ alignment report.
     "warnings": [...]
   }
 }
+
+## DO NOT echo the CVData
+- Return ONLY the `alignment` object above. Do NOT include a `data` block and
+  do NOT reproduce any CV field values. The pipeline reconstructs the filtered
+  CVData deterministically from your `kept` decisions — copying the CV back
+  would waste output and risk truncation.
+- Identify every project by its exact `project_name` from `<cv_data>` so the
+  pipeline can match your decision to the source project. Score and decide
+  `kept` for EVERY project in `<cv_data>.relevant_projects`.
 
 ## Scoring rules
 
@@ -499,15 +508,13 @@ it matches the DistilledToR across four dimensions. Weight them as follows:
 - Leave as [] if none of these conditions apply.
 
 ## Strict rules
-- Do NOT modify any field values in the CVData. Copy them exactly as received.
-- Do NOT add, infer, or generate any content.
-- The `data` block must be a valid CVData object.
-- Only `relevant_projects` changes between input and output — it contains
-  only the kept projects, in their original order.
-- Every other CVData field — including `employment_record`, `education`,
-  `languages`, `countries_of_experience`, `key_qualifications`, `certifications`,
-  and all personal info — must be copied to the output exactly as received.
-  Never empty a field that was non-empty in the input.
+- Do NOT modify, infer, or generate any CV content. Your job is scoring and
+  keep/drop decisions only.
+- Do NOT output a `data` block. The pipeline keeps the original CV field values
+  verbatim and rebuilds the filtered `relevant_projects` from your `kept` flags;
+  no CVData field is ever emptied.
+- `project_scores` must list EVERY project from the input (kept and dropped),
+  each keyed by its exact `project_name`.
 
 ## Pre-computed scores
 
@@ -558,38 +565,42 @@ def run(run_dir: Path) -> dict:
     # scoring signal for long-term vs short-term assignment weighting.
     cv_data = _precompute_project_dates_for_mapper(cv_data)
 
-    pre_computed = _precompute_relevance_scores(cv_data, tor_data)
-
-    user_message = (
-        f"<cv_data>\n{json.dumps(cv_data, indent=2)}\n</cv_data>\n\n"
-        f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
-        "<params>\n"
-        + json.dumps({"min_projects_to_keep": MIN_PROJECTS_TO_KEEP, **params}, indent=2)
-        + "\n</params>"
-        + (
-            f"\n\n<pre_computed>\n{json.dumps(pre_computed, indent=2)}\n</pre_computed>"
-            if pre_computed is not None
-            else ""
+    def _build_user_message(cd: dict) -> str:
+        pre_computed = _precompute_relevance_scores(cd, tor_data)
+        return (
+            f"<cv_data>\n{json.dumps(cd, indent=2)}\n</cv_data>\n\n"
+            f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
+            "<params>\n"
+            + json.dumps({"min_projects_to_keep": MIN_PROJECTS_TO_KEEP, **params}, indent=2)
+            + "\n</params>"
+            + (
+                f"\n\n<pre_computed>\n{json.dumps(pre_computed, indent=2)}\n</pre_computed>"
+                if pre_computed is not None
+                else ""
+            )
         )
-    )
 
-    with client.messages.stream(
-        model=ANTHROPIC_MODEL,
-        max_tokens=ANTHROPIC_MAX_TOKENS,
-        system=SYSTEM_PROMPT_A3,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "max_tokens":
-        update_step(run_dir, "cv_tor_mapper", "failed")
-        raise ValueError("CV-ToR Mapper response truncated (max_tokens reached).")
-
-    raw = strip_code_fences(response.content[0].text.strip())
-    raw = extract_json_object(raw)
+    def _reduce_input(attempt: int) -> str:
+        # Recovery only: shrink per-project free-text so a retry sends less than
+        # the attempt that failed. Tightens each attempt (200 -> 120 words).
+        word_cap = 200 if attempt == 1 else 120
+        return _build_user_message(truncate_project_text(cv_data, word_cap))
 
     try:
-        parsed = json.loads(raw)
+        parsed = call_agent_json(
+            client=client,
+            model=ANTHROPIC_MODEL,
+            max_tokens=ANTHROPIC_MAX_TOKENS,  # ceiling, not a target
+            system=SYSTEM_PROMPT_A3,
+            user_message=_build_user_message(cv_data),
+            context="CV-ToR Mapper",
+            reduce_input=_reduce_input,
+        )
+    except Exception as exc:
+        update_step(run_dir, "cv_tor_mapper", "failed")
+        raise ValueError(f"CV-ToR Mapper failed: {exc}") from exc
+
+    try:
         alignment = parsed["alignment"]
         assert "kept_sections" in alignment
         assert "dropped_sections" in alignment
@@ -597,6 +608,12 @@ def run(run_dir: Path) -> dict:
         assert "warnings" in alignment
 
         original_projects = cv_data.get("relevant_projects", [])
+
+        # A3 now returns ONLY `alignment` (no `data` echo). Reconstruct the
+        # CVData verbatim from the input; _enforce_threshold_and_cap rebuilds
+        # `relevant_projects` from the kept set below. Defensive: overwrite any
+        # `data` the model may have emitted anyway.
+        parsed["data"] = copy.deepcopy(cv_data)
 
         # Fix J + Fix 8 Part 1: Python enforcement of threshold and project cap.
         # Must run BEFORE CVData.model_validate so the corrected data is validated.
@@ -638,7 +655,8 @@ def run(run_dir: Path) -> dict:
     except Exception as exc:
         update_step(run_dir, "cv_tor_mapper", "failed")
         raise ValueError(
-            f"CV-ToR Mapper returned invalid output: {exc}\n\nRaw output:\n{raw}"
+            f"CV-ToR Mapper produced invalid alignment/data: {exc}\n\n"
+            f"Parsed keys: {list(parsed.keys())}"
         ) from exc
 
     output = {

@@ -43,6 +43,7 @@ from anthropic import Anthropic
 
 from pipeline.utils import strip_code_fences
 from pipeline.utils.cefr import map_cefr as _map_cefr
+from pipeline.utils.paths import get_by_path, normalise_path, set_by_path
 from pipeline.config import ANTHROPIC_MODEL
 
 log = logging.getLogger(__name__)
@@ -189,60 +190,10 @@ def _preview_value(value: object) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _normalise_path(field_path: str) -> list[str | int]:
-    """
-    Convert a mixed bracket/dot path string into a list of keys/indices.
-
-    Examples
-    --------
-    "key_qualifications[2]"         → ["key_qualifications", 2]
-    "relevant_projects[1].location" → ["relevant_projects", 1, "location"]
-    "personal_info.first_names"     → ["personal_info", "first_names"]
-    """
-    # Replace [N] bracket notation with .N so we can split uniformly
-    normalised = re.sub(r"\[(\d+)\]", r".\1", field_path)
-    parts = []
-    for part in normalised.split("."):
-        part = part.strip()
-        if not part:
-            continue
-        parts.append(int(part) if part.isdigit() else part)
-    return parts
-
-
-def get_by_path(data: dict, field_path: str):
-    """Return the value at field_path inside data, or raise KeyError/IndexError."""
-    parts = _normalise_path(field_path)
-    node = data
-    for part in parts:
-        if isinstance(node, list):
-            if not isinstance(part, int):
-                raise KeyError(f"Expected integer index, got '{part}'")
-            node = node[part]
-        elif isinstance(node, dict):
-            node = node[str(part)]
-        else:
-            raise KeyError(f"Cannot descend into {type(node).__name__} at '{part}'")
-    return node
-
-
-def set_by_path(data: dict, field_path: str, new_value) -> None:
-    """Write new_value at field_path inside data (in-place)."""
-    parts = _normalise_path(field_path)
-    node = data
-    for part in parts[:-1]:
-        if isinstance(node, list):
-            node = node[part]
-        elif isinstance(node, dict):
-            node = node[str(part)]
-        else:
-            raise KeyError(f"Cannot descend into {type(node).__name__} at '{part}'")
-
-    last = parts[-1]
-    if isinstance(node, list):
-        node[last] = new_value
-    else:
-        node[str(last)] = new_value
+# Path utilities moved to pipeline/utils/paths.py and shared with the content
+# reviewer (A5) and compressor (A6). Re-exported here under the historical name
+# so existing imports/behaviour are unchanged.
+_normalise_path = normalise_path
 
 
 # ---------------------------------------------------------------------------

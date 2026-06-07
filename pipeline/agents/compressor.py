@@ -25,8 +25,10 @@ from pipeline.precompute_utils import (
     count_compressible_words_total,
     count_words_per_field,
     restore_protected_fields,
+    truncate_project_text,
 )
-from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
+from pipeline.utils import call_agent_json, resolve_tor_for_agents
+from pipeline.utils.paths import set_by_path
 
 client = Anthropic()
 log = logging.getLogger(__name__)
@@ -73,10 +75,11 @@ target, while preserving meaning, accuracy, and tone.
 - No preamble. No reasoning text. No "Here is the JSON". No explanation.
 - No markdown fences (no ```json, no ```).
 - Do all reasoning silently. Only the JSON object is emitted.
+- Return ONLY the compression block + a `compressed_fields` patch — do NOT echo
+  or reproduce the CVData. The pipeline applies each shortened value to its field.
 - The output must have this exact shape:
 
 {
-  "data": { ...full CVData object with compressed content... },
   "compression": {
     "applied": true,
     "words_before": 0,
@@ -93,12 +96,25 @@ target, while preserving meaning, accuracy, and tone.
       }
     ]
   },
+  "compressed_fields": [
+    { "path": "relevant_projects[0].main_project_features", "content": "<shortened text>" }
+  ],
   "generation_warnings": []
 }
 
-- If no compression was needed (words_before <= target_words),
-  set `applied` to false, return the CVData unchanged, and leave
-  `fields_shortened` as [].
+## How compression is applied (READ — replaces the old echo model)
+- For each field you shorten, add ONE `compressed_fields` entry: `path` is the
+  dot/bracket path into the CVData (e.g.
+  `relevant_projects[0].main_project_features`, `generated_fields[2].content`,
+  `key_qualifications[1]`) and `content` is the shortened text. The pipeline
+  writes `content` to that path.
+- ONLY include fields you actually shortened. Fields left unchanged must NOT
+  appear — they are kept as-is automatically.
+- A path that cannot be resolved is skipped, so copy exact paths from <cv_data>.
+- `fields_shortened` (inside `compression`) stays as the human-readable audit
+  list of what you shortened.
+- If nothing should be shortened, set `applied` to false and return
+  `compressed_fields` as [].
 
 ## Compression instructions
 
@@ -157,9 +173,9 @@ sector keyword), compress as much as possible within the rules and set
 the rules in order to hit the number.
 
 ## Protected fields — never compress
-The following fields must not be compressed or paraphrased. Return them
-exactly as received. The pipeline will restore any protected field that
-was inadvertently altered — do not alter them intentionally.
+The following fields must not be compressed or paraphrased. NEVER include them
+in `compressed_fields`. The pipeline keeps them exactly as received and will
+restore any protected field that was inadvertently altered.
 - personal_info (all subfields)
 - education (all subfields)
 - languages (all subfields)
@@ -318,49 +334,59 @@ def run(
         "words_per_field": words_per_field,
     }
 
-    user_message = (
-        f"<cv_data>\n{json.dumps(cv_data_for_a6, indent=2)}\n</cv_data>\n\n"
-        f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
-        f"<compression_params>\n{json.dumps(compression_params, indent=2)}\n</compression_params>\n\n"
-        f"<generation_warnings>\n{json.dumps(generation_warnings, indent=2)}\n</generation_warnings>"
-    )
+    def _build_user_message(cd: dict) -> str:
+        return (
+            f"<cv_data>\n{json.dumps(cd, indent=2)}\n</cv_data>\n\n"
+            f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
+            f"<compression_params>\n{json.dumps(compression_params, indent=2)}\n</compression_params>\n\n"
+            f"<generation_warnings>\n{json.dumps(generation_warnings, indent=2)}\n</generation_warnings>"
+        )
 
-    with client.messages.stream(
-        model=ANTHROPIC_MODEL,
-        max_tokens=ANTHROPIC_MAX_TOKENS,
-        system=SYSTEM_PROMPT_A6,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "max_tokens":
-        update_step(run_dir, "compressor", "failed")
-        raise ValueError("Compressor response truncated (max_tokens reached).")
-
-    raw = strip_code_fences(response.content[0].text.strip())
-    raw = extract_json_object(raw)
+    def _reduce_input(attempt: int) -> str:
+        # Recovery only: shrink per-project free-text so a retry sends less input.
+        word_cap = 200 if attempt == 1 else 120
+        return _build_user_message(truncate_project_text(cv_data_for_a6, word_cap))
 
     try:
-        parsed = json.loads(raw)
-        cv_data_out_raw = parsed["data"]
+        parsed = call_agent_json(
+            client=client,
+            model=ANTHROPIC_MODEL,
+            max_tokens=ANTHROPIC_MAX_TOKENS,  # ceiling, not a target
+            system=SYSTEM_PROMPT_A6,
+            user_message=_build_user_message(cv_data_for_a6),
+            context="Compressor",
+            reduce_input=_reduce_input,
+        )
+    except Exception as exc:
+        update_step(run_dir, "compressor", "failed")
+        raise
+
+    try:
         compression_raw = parsed["compression"]
         # P18: accept target_not_reached from LLM (defaults False if absent)
         compression_result = CompressionResult.model_validate(compression_raw)
     except Exception as exc:
         update_step(run_dir, "compressor", "failed")
-        raise ValueError(f"Compressor returned invalid output: {exc}\n\nRaw:\n{raw}") from exc
+        raise ValueError(f"Compressor returned invalid output: {exc}") from exc
 
-    # R7-L (post-A6): restore activities_performed from cv_data_in for GIZ runs.
-    # A6 never saw or compressed activities_performed for GIZ (it was cleared
-    # in cv_data_for_a6), so the original values from cv_data_in are the source
-    # of truth. Match by project index (safe because R7-B guarantees stable
-    # ordering in mapped_cv.json before A4 runs, and A6 must not reorder projects).
-    if donor == "giz":
-        out_projects = cv_data_out_raw.get("relevant_projects", [])
-        in_projects = cv_data_in.get("relevant_projects", [])
-        for i, out_proj in enumerate(out_projects):
-            if i < len(in_projects):
-                out_proj["activities_performed"] = in_projects[i].get("activities_performed", "")
+    # A6 returns a PATCH (compressed_fields), not the CVData. Apply each shortened
+    # value onto a copy of the PRE-compression data via the shared setter.
+    # Building from cv_data_in means:
+    #   - protected fields are untouched by construction (only compressible paths
+    #     are written), so restore_protected_fields below is a safety net;
+    #   - R7-L is automatic — GIZ's activities_performed keep cv_data_in's original
+    #     values (the LLM never sees or emits them; they're cleared in cv_data_for_a6).
+    cv_data_out_raw = copy.deepcopy(cv_data_in)
+    for item in parsed.get("compressed_fields", []) or []:
+        path = (item.get("path") or "").strip()
+        content = item.get("content")
+        if not path or not isinstance(content, str):
+            continue
+        try:
+            set_by_path(cv_data_out_raw, path, content)
+        except (KeyError, IndexError, TypeError):
+            # Best-effort: a shortened value targeting an unresolved path is skipped.
+            continue
 
     # P16 (post-compute): overwrite LLM's estimated words_after with authoritative count
     compression_result.words_after = count_compressible_words_total(cv_data_out_raw)

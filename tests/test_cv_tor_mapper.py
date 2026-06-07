@@ -490,8 +490,10 @@ class TestPPAConstants:
     def test_min_projects_is_10(self):
         assert MIN_PROJECTS_TO_KEEP == 10
 
-    def test_max_projects_is_30(self):
-        assert MAX_PROJECTS_TO_KEEP == 30
+    def test_max_projects_is_15(self):
+        # Lowered from R7.5-C's 30 to curb A3/A4/A5/A6 output volume under the
+        # richer Opus-4.8 extraction.
+        assert MAX_PROJECTS_TO_KEEP == 15
 
 
 # ---------------------------------------------------------------------------
@@ -650,3 +652,96 @@ class TestSortByDateDescRR:
         ]
         result = _sort_by_date_desc(projects)
         assert result[0]["project_name"] == "New"
+
+
+# ---------------------------------------------------------------------------
+# A3 output-contract refactor — LLM emits only `alignment`; Python reconstructs
+# `data` verbatim from the input cv_data (no full-CVData echo).
+# ---------------------------------------------------------------------------
+
+import json
+
+from models import CVData, PersonalInfo, RelevantProject, DistilledToR
+from pipeline.agents import cv_tor_mapper
+from pipeline.manifest import create_manifest
+
+
+def _setup_run_dir(run_dir, projects):
+    cv = CVData(
+        personal_info=PersonalInfo(first_names="Ada", family_name="Lovelace"),
+        relevant_projects=projects,
+    )
+    (run_dir / "cv_data.json").write_text(
+        json.dumps({"approved": False, "approved_at": None, "data": cv.model_dump()}),
+        encoding="utf-8",
+    )
+    tor = DistilledToR(position_title="Engineer")
+    (run_dir / "tor_data.json").write_text(
+        json.dumps({
+            "approved": False, "approved_at": None,
+            "pools": [tor.model_dump()], "selected_pool_index": 0,
+        }),
+        encoding="utf-8",
+    )
+    create_manifest(run_dir, run_id="t", cv_path="", tor_path="", params={"donor": "giz"})
+
+
+class TestRunReconstructsData:
+    def test_data_reconstructed_from_input_not_llm(self, tmp_path, monkeypatch):
+        projects = [RelevantProject(project_name="P1"), RelevantProject(project_name="P2")]
+        _setup_run_dir(tmp_path, projects)
+
+        def fake_call(**kwargs):
+            # A3 returns ONLY alignment. Include a bogus `data` to prove the
+            # pipeline ignores/overwrites anything the model echoes.
+            return {
+                "data": {"junk": True},
+                "alignment": {
+                    "kept_sections": ["relevant_projects"],
+                    "dropped_sections": [],
+                    "project_scores": [
+                        {"project_name": "P1", "relevance_score": 0.8, "kept": True},
+                        {"project_name": "P2", "relevance_score": 0.7, "kept": True},
+                    ],
+                    "warnings": [],
+                },
+            }
+
+        monkeypatch.setattr(cv_tor_mapper, "call_agent_json", fake_call)
+        cv_tor_mapper.run(tmp_path)
+
+        mapped = json.loads((tmp_path / "mapped_cv.json").read_text(encoding="utf-8"))
+        data = mapped["data"]
+        # Reconstructed verbatim from input cv_data, NOT from the model's `data`.
+        assert data["personal_info"]["first_names"] == "Ada"
+        assert "junk" not in data
+        names = [p["project_name"] for p in data["relevant_projects"]]
+        assert names == ["P1", "P2"]
+        # alignment passed through
+        assert len(mapped["alignment"]["project_scores"]) == 2
+
+    def test_dropped_project_excluded_from_reconstructed_data(self, tmp_path, monkeypatch):
+        # 12 projects so the effective floor (min(10,12)=10) doesn't auto-restore
+        # the single LLM-dropped project. P00..P11; P11 dropped.
+        projects = [RelevantProject(project_name=f"P{i:02d}") for i in range(12)]
+        _setup_run_dir(tmp_path, projects)
+
+        scores = [
+            {"project_name": f"P{i:02d}", "relevance_score": 0.80, "kept": True}
+            for i in range(11)
+        ]
+        scores.append({"project_name": "P11", "relevance_score": 0.20, "kept": False})
+
+        def fake_call(**kwargs):
+            return {"alignment": {
+                "kept_sections": ["relevant_projects"], "dropped_sections": [],
+                "project_scores": scores, "warnings": [],
+            }}
+
+        monkeypatch.setattr(cv_tor_mapper, "call_agent_json", fake_call)
+        cv_tor_mapper.run(tmp_path)
+
+        data = json.loads((tmp_path / "mapped_cv.json").read_text(encoding="utf-8"))["data"]
+        names = {p["project_name"] for p in data["relevant_projects"]}
+        assert "P11" not in names
+        assert len(names) == 11

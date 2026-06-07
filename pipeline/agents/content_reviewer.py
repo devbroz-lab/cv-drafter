@@ -37,14 +37,15 @@ from pipeline.config import (
     WORD_COUNT_TOLERANCE_PCT,
 )
 from pipeline.manifest import update_step
+from pipeline.precompute_utils import truncate_project_text
 from pipeline.text_encoding import UTF_8
 from pipeline.utils import (
-    extract_json_object,
+    call_agent_json,
     load_json_file,
     load_tor_envelope,
-    parse_json_string,
     resolve_selected_tor_pool,
 )
+from pipeline.utils.paths import set_by_path
 from pipeline.validation import (
     cross_reference_geo_alternative,
     extract_required_years_for_tier,
@@ -67,14 +68,15 @@ and flag high-severity issues for human resolution.
 - No preamble. No reasoning text. No "Here is the JSON". No explanation.
 - No markdown fences (no ```json, no ```).
 - Do all reasoning silently. Only the JSON object is emitted.
+- Return ONLY the `review` object — do NOT echo or reproduce the CVData. The
+  pipeline already holds the data and applies your low-severity fixes to it.
 - The output must have this exact shape:
 
 {
-  "data": { ...full CVData object, with low-severity fixes applied... },
   "review": {
     "high_severity": [
       {
-        "path": "...dot-path into CVData...",
+        "path": "...dot/bracket-path into CVData...",
         "field": "...",
         "issue": "...",
         "recommendation": "...",
@@ -83,7 +85,7 @@ and flag high-severity issues for human resolution.
     ],
     "low_severity": [
       {
-        "path": "...dot-path into CVData...",
+        "path": "...dot/bracket-path into CVData...",
         "field": "...",
         "issue": "...",
         "original": "...",
@@ -94,6 +96,16 @@ and flag high-severity issues for human resolution.
     "passed": true
   }
 }
+
+## How fixes are applied (READ — replaces the old inline-edit model)
+- You do NOT return the CVData. For each low_severity item, the pipeline writes
+  your `fixed` string to the field at `path`. Therefore EVERY low_severity item
+  MUST include both a valid `path` and the corrected `fixed` value.
+- `path` uses dot/bracket notation into the CVData, e.g.
+  `generated_fields[0].content`, `relevant_projects[2].main_project_features`.
+  A path that cannot be resolved is skipped silently, so be precise.
+- high_severity items are FLAG-ONLY — they change nothing. Never try to "fix"
+  data via a high_severity entry; the original value is preserved automatically.
 
 ## BLOCKING RULE — mandatory
 `passed` MUST be false if `high_severity` contains ANY entries.
@@ -172,10 +184,10 @@ Flag as high severity if any of the following are true:
    Only flag if the gap is total — if there is partial evidence, treat it
    as low severity.
 
-CRITICAL: When flagging a field as high severity, copy its current value
-into the output CVData UNCHANGED. Never empty, clear, or nullify a field
-you are flagging. The flag is for human awareness only — the original
-content must survive into the output intact.
+CRITICAL: high_severity is flag-only. You do not return the CVData, so a
+high_severity entry never changes any value — the original content is always
+preserved by the pipeline. Only low_severity entries (via `path` + `fixed`)
+modify data.
 
 ## WB FORMAT RULE — source='tor' tasks are correct and expected
 For World Bank format CVs, detailed_tasks with source='tor' are EXPECTED
@@ -403,8 +415,8 @@ values.  Use them as described — do NOT independently recalculate them.
     ToR — do not flag a geographic gap.
 
 ## Auto-fix note
-Low-severity issues are fixed inline in the `data` block before the review is
-finalised.  These fixes are applied exactly once and are not re-reviewed.
+Low-severity issues are fixed by the pipeline writing your `fixed` value to the
+field at `path`. These fixes are applied exactly once and are not re-reviewed.
 Therefore:
 - Prefer the minimal rewrite that resolves the flagged issue.
 - Never introduce new claims, expand the scope of a statement, or change
@@ -660,50 +672,70 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
     # Pre-compute experience gap and geographic alternative
     pre_computed = _precompute_context(cv_data_in, tor_data, params)
 
-    user_message = (
-        f"<run_date>\n{run_date}\n</run_date>\n\n"
-        f"<cv_data>\n{json.dumps(cv_data_in, indent=2)}\n</cv_data>\n\n"
-        f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
-        f"<generation_warnings>\n{json.dumps(generation_warns, indent=2)}\n</generation_warnings>\n\n"
-        f"<pre_computed>\n{json.dumps(pre_computed, indent=2)}\n</pre_computed>"
-    )
+    def _build_user_message(cd: dict) -> str:
+        return (
+            f"<run_date>\n{run_date}\n</run_date>\n\n"
+            f"<cv_data>\n{json.dumps(cd, indent=2)}\n</cv_data>\n\n"
+            f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
+            f"<generation_warnings>\n{json.dumps(generation_warns, indent=2)}\n</generation_warnings>\n\n"
+            f"<pre_computed>\n{json.dumps(pre_computed, indent=2)}\n</pre_computed>"
+        )
 
-    with client.messages.stream(
-        model=ANTHROPIC_MODEL,
-        max_tokens=ANTHROPIC_MAX_TOKENS,
-        system=SYSTEM_PROMPT_A5,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "max_tokens":
-        update_step(run_dir, "content_reviewer", "failed")
-        raise ValueError("Content Reviewer response truncated (max_tokens reached).")
-
-    raw_text = extract_json_object(response.content[0].text.strip())
+    def _reduce_input(attempt: int) -> str:
+        # Recovery only: shrink per-project free-text so a retry sends less input.
+        word_cap = 200 if attempt == 1 else 120
+        return _build_user_message(truncate_project_text(cv_data_in, word_cap))
 
     try:
-        parsed = parse_json_string(raw_text, context="content_reviewer.llm_response")
-        cv_data_out = CVData.model_validate(parsed["data"])
+        parsed = call_agent_json(
+            client=client,
+            model=ANTHROPIC_MODEL,
+            max_tokens=ANTHROPIC_MAX_TOKENS,  # ceiling, not a target
+            system=SYSTEM_PROMPT_A5,
+            user_message=_build_user_message(cv_data_in),
+            context="Content Reviewer",
+            reduce_input=_reduce_input,
+        )
+    except Exception as exc:
+        update_step(run_dir, "content_reviewer", "failed")
+        raise
+
+    try:
         review = parsed["review"]
         assert "high_severity" in review
         assert "low_severity" in review
     except Exception as exc:
         update_step(run_dir, "content_reviewer", "failed")
         raise ValueError(
-            f"Content Reviewer returned invalid output: {exc}\n\nRaw:\n{raw_text}"
+            f"Content Reviewer returned invalid output: {exc}"
         ) from exc
 
-    # Restore any generated_fields content that the reviewer inadvertently emptied
-    original_gf = cv_data_in.get("generated_fields", [])
-    reviewed_gf = parsed["data"].get("generated_fields", [])
-    for i, (orig, reviewed_item) in enumerate(zip(original_gf, reviewed_gf, strict=False)):
-        if orig.get("content", "").strip() and not reviewed_item.get("content", "").strip():
-            reviewed_item["content"] = orig["content"]
-            parsed["data"]["generated_fields"][i] = reviewed_item
+    # A5 returns ONLY the review (no CVData echo). Apply each low-severity
+    # auto-fix (path + fixed) onto a copy of the generated data via the shared
+    # bracket/dot setter. high_severity entries are flag-only — they change
+    # nothing, so the original content is preserved by construction (this also
+    # makes the old "restore emptied generated_fields" hack unnecessary).
+    import copy
 
-    # Re-validate after restoration
-    cv_data_out = CVData.model_validate(parsed["data"])
+    reviewed_data = copy.deepcopy(cv_data_in)
+    for item in review.get("low_severity", []) or []:
+        path = (item.get("path") or "").strip()
+        fixed = item.get("fixed")
+        if not path or not isinstance(fixed, str):
+            continue
+        try:
+            set_by_path(reviewed_data, path, fixed)
+        except (KeyError, IndexError, TypeError):
+            # Best-effort: a fix targeting an unresolved path is skipped, not fatal.
+            continue
+
+    try:
+        cv_data_out = CVData.model_validate(reviewed_data)
+    except Exception as exc:
+        update_step(run_dir, "content_reviewer", "failed")
+        raise ValueError(
+            f"Content Reviewer produced invalid data after applying fixes: {exc}"
+        ) from exc
 
     # Apply all deterministic post-processing
     _apply_post_processing(review, pre_computed)
