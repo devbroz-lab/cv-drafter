@@ -647,13 +647,15 @@ async def get_session_manifest(
             detail=f"Could not read manifest: {exc}",
         ) from exc
 
+    raw_steps = manifest.get("steps", [])
     steps = [
         ManifestStepResponse(
             name=s["name"],
             status=s["status"],
+            started_at=s.get("started_at"),
             completed_at=s.get("completed_at"),
         )
-        for s in manifest.get("steps", [])
+        for s in raw_steps
     ]
 
     # Determine which checkpoint is currently pending (if any)
@@ -665,12 +667,32 @@ async def get_session_manifest(
         if s.name == "content_reviewer" and s.status == "blocked":
             reviewer_blocked = True
 
+    # Real-time progress signals (derived from step statuses).
+    from pipeline.manifest import compute_progress, current_running_step
+
+    # Agent warnings accumulated in manifest.json, streamed on each poll. Each
+    # entry already carries its own stage (= step name) so the UI can group
+    # warnings under the step that produced them.
+    warnings = [
+        WarningEntry(
+            stage=w.get("stage", "manifest"),
+            kind=w.get("kind", "manifest_warning"),
+            message=w.get("message", str(w)),
+            details=w.get("details") or None,
+        )
+        for w in manifest.get("warnings", [])
+        if isinstance(w, dict)
+    ]
+
     return ManifestResponse(
         session_id=session_id,
         db_status=row["status"],
         steps=steps,
         checkpoint_pending=checkpoint_pending,
         reviewer_blocked=reviewer_blocked,
+        progress=compute_progress(raw_steps),
+        current_step=current_running_step(raw_steps),
+        warnings=warnings,
     )
 
 
@@ -1206,68 +1228,76 @@ async def get_warnings(
     run_dir = get_run_dir(session_id)
     warnings: list[WarningEntry] = []
 
-    # Stage 1: extraction warnings from cv_data.json
-    cv_data_path = run_dir / "cv_data.json"
-    if cv_data_path.exists():
-        try:
-            cv_raw = json.loads(cv_data_path.read_text(encoding="utf-8"))
-            for msg in cv_raw.get("data", {}).get("extraction_warnings", []):
-                warnings.append(
-                    WarningEntry(stage="extraction", kind="extraction_warning", message=str(msg))
-                )
-        except Exception:
-            pass  # non-fatal — return what we can
+    def _add(stage: str, kind: str, message, details=None) -> None:
+        warnings.append(
+            WarningEntry(stage=stage, kind=kind, message=str(message), details=details or None)
+        )
 
-    # Stage 2: alignment warnings from mapped_cv.json
-    mapped_path = run_dir / "mapped_cv.json"
-    if mapped_path.exists():
-        try:
-            mapped_raw = json.loads(mapped_path.read_text(encoding="utf-8"))
-            for msg in mapped_raw.get("alignment", {}).get("warnings", []):
-                warnings.append(
-                    WarningEntry(stage="alignment", kind="alignment_warning", message=str(msg))
-                )
-        except Exception:
-            pass
-
-    # Stage 3: manifest-level warnings from manifest.json
+    # Source 1 (canonical / real-time): manifest.json warnings already carry
+    # their own per-step stage. Read FIRST so they win de-duplication and the
+    # per-step stage is preserved (matches GET /manifest).
     manifest_path = run_dir / "manifest.json"
     if manifest_path.exists():
         try:
             manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
             for w in manifest_raw.get("warnings", []):
                 if isinstance(w, dict):
-                    warnings.append(
-                        WarningEntry(
-                            stage="manifest",
-                            kind=w.get("kind", "manifest_warning"),
-                            message=w.get("message", str(w)),
-                            details=w.get("details"),
-                        )
+                    _add(
+                        w.get("stage", "manifest"),
+                        w.get("kind", "manifest_warning"),
+                        w.get("message", str(w)),
+                        w.get("details"),
                     )
                 else:
-                    warnings.append(
-                        WarningEntry(stage="manifest", kind="manifest_warning", message=str(w))
-                    )
+                    _add("manifest", "manifest_warning", str(w))
+        except Exception:
+            pass  # non-fatal — return what we can
+
+    # Sources 2–4: the raw artifact files. The orchestrator now backfills these
+    # into the manifest, but reading them directly keeps backward-compat for
+    # sessions created before the backfill. Use the SAME per-step stage names as
+    # the manifest so the (kind, message) de-dup below collapses true duplicates.
+    cv_data_path = run_dir / "cv_data.json"
+    if cv_data_path.exists():
+        try:
+            cv_raw = json.loads(cv_data_path.read_text(encoding="utf-8"))
+            for msg in (cv_raw.get("data", {}) or {}).get("extraction_warnings", []):
+                _add("cv_extractor", "extraction_warning", msg)
         except Exception:
             pass
 
-    # Stage 4: generation warnings from generated_fields.json
+    mapped_path = run_dir / "mapped_cv.json"
+    if mapped_path.exists():
+        try:
+            mapped_raw = json.loads(mapped_path.read_text(encoding="utf-8"))
+            for msg in (mapped_raw.get("alignment", {}) or {}).get("warnings", []):
+                _add("cv_tor_mapper", "alignment_warning", msg)
+        except Exception:
+            pass
+
     gf_path = run_dir / "generated_fields.json"
     if gf_path.exists():
         try:
             gf_raw = json.loads(gf_path.read_text(encoding="utf-8"))
             for msg in gf_raw.get("generation_warnings", []):
-                warnings.append(
-                    WarningEntry(stage="generation", kind="generation_warning", message=str(msg))
-                )
+                _add("fields_generator", "generation_warning", msg)
         except Exception:
             pass
 
-    # Build per-stage counts
-    counts: dict[str, int] = {"extraction": 0, "alignment": 0, "manifest": 0, "generation": 0}
+    # De-duplicate by (kind, message): a warning backfilled into the manifest and
+    # still present in its source file must appear once. First occurrence wins.
+    deduped: list[WarningEntry] = []
+    seen: set[tuple[str, str]] = set()
     for w in warnings:
-        if w.stage in counts:
-            counts[w.stage] += 1
+        key = (w.kind, w.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(w)
 
-    return WarningsResponse(session_id=session_id, warnings=warnings, counts=counts)
+    # Per-stage counts over the de-duplicated list (keys are step names).
+    counts: dict[str, int] = {}
+    for w in deduped:
+        counts[w.stage] = counts.get(w.stage, 0) + 1
+
+    return WarningsResponse(session_id=session_id, warnings=deduped, counts=counts)
