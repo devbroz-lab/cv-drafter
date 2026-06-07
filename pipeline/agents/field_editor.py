@@ -910,6 +910,12 @@ def run(
         edit promoting the source is reflected accurately.
     """
     gf_path = run_dir / "generated_fields.json"
+    try:
+        from api.services.run_artifacts import hydrate_run_artifact
+
+        hydrate_run_artifact(run_dir.name, run_dir, "generated_fields.json")
+    except Exception:
+        pass
     if not gf_path.exists():
         raise FileNotFoundError(
             f"generated_fields.json not found in {run_dir}. "
@@ -943,6 +949,14 @@ def run(
     # Write back — preserve all top-level keys, only replace "generated"
     gf["generated"] = mutated
     gf_path.write_text(json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, gf_path)
+    except Exception:
+        log.warning(
+            "generated_fields Storage sync failed for %s", run_dir.name, exc_info=True
+        )
 
     log.info(
         "field_editor complete — applied=%s skipped=%s kq_source=%s run_dir=%s",

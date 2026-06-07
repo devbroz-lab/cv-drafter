@@ -955,7 +955,10 @@ async def get_review(
 
     from pipeline.paths import get_run_dir
 
+    from api.services.run_artifacts import hydrate_run_artifact
+
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():
         raise HTTPException(
@@ -1008,10 +1011,12 @@ async def resolve_review(
 
     import json as _json
 
+    from api.services.run_artifacts import hydrate_run_artifact, push_run_artifact
     from pipeline.manifest import update_step as manifest_update_step
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     gf_path = run_dir / "generated_fields.json"
 
     if not gf_path.exists():
@@ -1031,6 +1036,7 @@ async def resolve_review(
                 set_by_dot_path(generated, dot_path, value)
             gf["generated"] = generated
             gf_path.write_text(_json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+            push_run_artifact(session_id, gf_path)
         except DotPathError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except Exception as exc:
@@ -1046,6 +1052,7 @@ async def resolve_review(
             if gf.get("review"):
                 gf["review"]["passed"] = True
             gf_path.write_text(_json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+            push_run_artifact(session_id, gf_path)
             manifest_update_step(run_dir, "content_reviewer", "done")
         except Exception as exc:
             raise HTTPException(
@@ -1195,7 +1202,10 @@ async def get_output(
 
     from pipeline.paths import get_run_dir
 
+    from api.services.run_artifacts import hydrate_run_artifact
+
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     gf_path = run_dir / "generated_fields.json"
 
     if not gf_path.exists():
@@ -1251,9 +1261,11 @@ async def get_warnings(
     """
     _require_owned_session(session_id, current_user.user_id)
 
+    from api.services.run_artifacts import hydrate_run_artifact
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     warnings: list[WarningEntry] = []
 
     # Stage 1: extraction warnings from cv_data.json

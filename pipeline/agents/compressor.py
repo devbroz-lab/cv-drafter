@@ -12,6 +12,7 @@ Output: updates generated_fields.json (adds "compression" block, updates "genera
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from anthropic import Anthropic
@@ -28,6 +29,18 @@ from pipeline.precompute_utils import (
 from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
 
 client = Anthropic()
+log = logging.getLogger(__name__)
+
+
+def _push_generated_fields(run_dir: Path, gf_path: Path) -> None:
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, gf_path)
+    except Exception:
+        log.warning(
+            "generated_fields Storage sync failed for %s", run_dir.name, exc_info=True
+        )
 
 # Fields that must NEVER be passed to compression logic.
 PROTECTED_FIELDS: frozenset[str] = frozenset(
@@ -293,6 +306,7 @@ def run(
         gf_raw["compression"] = compression_result.model_dump()
         gf_raw["generation_warnings"] = generation_warnings
         gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding="utf-8")
+        _push_generated_fields(run_dir, gf_path)
         update_step(run_dir, "compressor", "done")
         return CVData.model_validate(cv_data_in)
 
@@ -368,6 +382,7 @@ def run(
     # P19: write generation_warnings passthrough back to file
     gf_raw["generation_warnings"] = generation_warnings
     gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding="utf-8")
+    _push_generated_fields(run_dir, gf_path)
 
     update_step(run_dir, "compressor", "done")
     return cv_data_out

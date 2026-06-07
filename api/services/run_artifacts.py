@@ -15,8 +15,8 @@ from api.services.storage import download_bytes, upload_bytes
 
 log = logging.getLogger(__name__)
 
-# Artifacts the UI polls before pipeline completion.
-_SYNCED_ARTIFACTS = frozenset({"manifest.json", "tor_data.json"})
+# Run-dir JSON the API reads after deploy / across replicas.
+_SYNCED_ARTIFACTS = frozenset({"manifest.json", "tor_data.json", "generated_fields.json"})
 
 
 def artifact_storage_key(session_id: str, filename: str) -> str:
