@@ -20,8 +20,12 @@ import copy
 from models import FORMAT_PROFILES, CVData
 from pipeline.config import ANTHROPIC_SYNTHESIS_MODEL, ANTHROPIC_MAX_TOKENS
 from pipeline.manifest import update_step
-from pipeline.precompute_utils import compute_project_duration, compute_project_year
-from pipeline.utils import extract_json_object, resolve_tor_for_agents, strip_code_fences
+from pipeline.precompute_utils import (
+    compute_project_duration,
+    compute_project_year,
+    truncate_project_text,
+)
+from pipeline.utils import call_agent_json, resolve_tor_for_agents
 
 client = Anthropic()
 
@@ -85,7 +89,8 @@ When you generate your response, always follow this sequence:
      all of Part 1. An incomplete Part 1 is recoverable; an empty
      `generated_fields` is not.
 
-  3. Return the full CVData — both parts must be present in the response.
+  3. Return the PATCH object (see "## Output structure") — never the CVData.
+     `generated_fields` (Part 2) is required; Part 1 fields are optional.
 
 ## Output contract (READ FIRST)
 - Your entire response must be a single JSON object — nothing else.
@@ -93,8 +98,9 @@ When you generate your response, always follow this sequence:
 - No preamble. No reasoning text. No "Here is the JSON". No explanation.
 - No markdown fences (no ```json, no ```).
 - Do all reasoning silently. Only the JSON object is emitted.
-- The output must be a valid, complete CVData object.
-- Return the full CVData — not just the fields you changed.
+- Output a small PATCH object (shape in "## Output structure"), NOT the CVData.
+- Do NOT echo or reproduce the CV. The pipeline already has the full CVData and
+  merges your patch into it. Reproducing it wastes output and risks truncation.
 
 ## Tone and style
 - Active and punchy. Action verbs. No pronouns.
@@ -105,41 +111,51 @@ When you generate your response, always follow this sequence:
 - Good: "Designed grid-integration framework adopted across 3 pilot provinces."
 - Bad: "Responsible for supporting the design of grid frameworks."
 
-## Part 1 — Fill empty fields
+## Part 1 — Targeted field fills (reported as patch entries, NOT echoed)
+
+You do not return the CVData, so you only report the few fields you fill.
+`duration` and `year` are pre-computed by the pipeline — do NOT touch them.
 
 ### present_position
-- If empty, derive from the most recent RelevantProject.positions_held.
-- If already populated, leave unchanged.
+- If `<cv_data>.present_position` is empty, derive it from the most recent
+  RelevantProject's `positions_held` and report it in the patch's
+  `present_position` field.
+- If it is already populated, omit `present_position` from the patch (or set
+  it to ""). Never overwrite a populated value.
 
-### key_qualifications (extracted field on CVData)
-- If empty and no generated version will be produced (which should not happen
-  for GIZ), leave as [].
-- If already populated from extraction, leave unchanged — do not overwrite.
+### project main_project_features (project_overviews)
 
-### relevant_projects — empty subfields only
-For each RelevantProject, fill only fields that are empty string "":
-- `duration`: the pipeline has pre-computed this value from date_from and
-  date_to before calling you. The pre-filled value is already present in the
-  `<cv_data>` you received. Copy it exactly as received — do NOT recalculate,
-  modify, or derive your own duration value.
-- `year`: the pipeline has pre-computed this value as well. Copy it exactly
-  as received — do NOT recalculate or derive your own year string.
-- `main_project_features`: if empty AND `activities_performed` is populated,
-  synthesise a project overview from the available metadata (`project_name`,
-  `company`, `location`, `date_from`, `date_to`) and any programme-level
-  context inferable from the project name and ToR background. The overview
-  must describe what the project is — its objective, sector, and scope —
-  not what the candidate did. Never duplicate content from
-  `activities_performed`. Scale length proportionally to available metadata:
-  rich metadata (named programme, known client, clear sector) warrants 2–3
-  sentences; sparse metadata warrants 1 sentence. If both `main_project_features`
-  AND `activities_performed` are empty, leave `main_project_features` as "".
-  If `main_project_features` is already populated, leave it unchanged.
-- All other project fields: never fill — if empty, leave empty.
+Each entry is `{"index": <0-based index into relevant_projects>, "main_project_features": "<text>"}`.
+The `<params>.donor` value selects the behaviour:
 
-### All other CVData fields
-- Do not touch any field that is already populated.
-- Do not generate content for fields not listed above.
+**GIZ (donor = "giz") — write a full narrative for EVERY project.**
+The GIZ output renders ONLY `main_project_features` as the project description —
+it never shows `activities_performed`. So for GIZ you MUST emit one
+`project_overviews` entry for EVERY project in `<cv_data>.relevant_projects`.
+- 50–90 words. Weave together what the project IS (objective, sector,
+  client/donor programme, geography) AND the candidate's concrete role and
+  contributions — drawn from that project's existing `main_project_features`,
+  `activities_performed`, `positions_held`, and metadata.
+- It must read as a self-contained project description; the reader will not see
+  `activities_performed` separately.
+- Ground every statement in that project's own data — never invent figures,
+  clients, or outcomes. Past tense, active voice, no pronouns, no filler.
+- Emit an entry even when source detail is thin: write the best 1–2 sentence
+  narrative the available metadata supports. These entries OVERWRITE the
+  extracted text, so cover every project.
+
+**World Bank (donor = "world_bank") — fill only when empty.**
+WB renders `main_project_features` and `activities_performed` separately, so do
+NOT merge them. Emit an entry ONLY for a project whose `main_project_features`
+is empty AND whose `activities_performed` is populated:
+- Describe what the project IS (objective, sector, scope, client/donor) — NOT
+  what the candidate did. Never duplicate `activities_performed`.
+- 1–3 sentences scaled to available metadata.
+- If both are empty, or `main_project_features` is already populated, do NOT
+  emit an entry for that project.
+
+Use each project's index in `<cv_data>.relevant_projects` as `index`. Do not
+report any field other than `present_position` and `project_overviews` in Part 1.
 
 ## Part 2 — Generate format-specific content
 
@@ -332,16 +348,23 @@ If any of the following apply, append a warning string to the output's
 - The expert has no prior project in the ToR's stated geography
 
 ## Output structure
-Return the full CVData object with:
-- `generated_fields` populated with all GeneratedField items produced
-- `present_position` and project subfields filled where applicable
-- A top-level `generation_warnings` list (may be empty)
-
-The output JSON must have this shape:
+Return a PATCH object — never the CVData. Shape:
 {
-  "data": { ...full CVData object... },
+  "generated_fields": [
+    { "field_key": "key_qualifications" | "detailed_tasks", "content": "...", "source": "tor" | "experience" | "generated" }
+  ],
+  "present_position": "<string, or omit / \"\" if already populated>",
+  "project_overviews": [
+    { "index": 0, "main_project_features": "..." }
+  ],
   "generation_warnings": []
 }
+
+- `generated_fields` is REQUIRED and must be non-empty (see Minimum output
+  guarantee) — it holds every GeneratedField item you produce in Part 2.
+- `present_position` and `project_overviews` are the only Part 1 outputs.
+- `generation_warnings` is a (possibly empty) list of warning strings.
+- Emit nothing else — no CV fields, no `data` block.
 
 ## Inputs
 The user message will contain:
@@ -386,41 +409,74 @@ def run(run_dir: Path) -> CVData:
     # empty values) but we skip it to avoid the redundant deepcopy on every run.
     # cv_data = _precompute_project_dates(cv_data)  ← now happens in cv_tor_mapper
 
-    # R7-J: per-project text truncation removed. claude-sonnet-4-6 has a 200k
-    # token context window and handles dense CV inputs without truncation risk.
-    # A4 now receives the full untruncated cv_data directly from mapped_cv.json.
+    # R7-J: A4 receives full untruncated cv_data on the happy path. A4 now returns
+    # a PATCH (generated_fields + present_position + project_overviews) instead of
+    # echoing the whole CVData — the pipeline merges it below. This keeps A4 output
+    # small regardless of how rich the Opus-extracted input is.
 
-    user_message = (
-        f"<cv_data>\n{json.dumps(cv_data, indent=2)}\n</cv_data>\n\n"
-        f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
-        f"<format_profile>\n{json.dumps(format_profile.model_dump(), indent=2)}"
-        "\n</format_profile>\n\n"
-        f"<params>\n{json.dumps(params, indent=2)}\n</params>"
-    )
+    def _build_user_message(cd: dict) -> str:
+        return (
+            f"<cv_data>\n{json.dumps(cd, indent=2)}\n</cv_data>\n\n"
+            f"<tor_data>\n{json.dumps(tor_data, indent=2)}\n</tor_data>\n\n"
+            f"<format_profile>\n{json.dumps(format_profile.model_dump(), indent=2)}"
+            "\n</format_profile>\n\n"
+            f"<params>\n{json.dumps(params, indent=2)}\n</params>"
+        )
 
-    with client.messages.stream(
-        model=ANTHROPIC_SYNTHESIS_MODEL,
-        max_tokens=ANTHROPIC_MAX_TOKENS,
-        system=SYSTEM_PROMPT_A4,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "max_tokens":
-        update_step(run_dir, "fields_generator", "failed")
-        raise ValueError("Fields Generator response truncated (max_tokens reached).")
-
-    raw = strip_code_fences(response.content[0].text.strip())
-    raw = extract_json_object(raw)
+    def _reduce_input(attempt: int) -> str:
+        # Recovery only: shrink per-project free-text so a retry sends less input.
+        word_cap = 200 if attempt == 1 else 120
+        return _build_user_message(truncate_project_text(cv_data, word_cap))
 
     try:
-        parsed = json.loads(raw)
-        cv_data_out = CVData.model_validate(parsed["data"])
-        generation_warnings = parsed.get("generation_warnings", [])
+        parsed = call_agent_json(
+            client=client,
+            model=ANTHROPIC_SYNTHESIS_MODEL,
+            max_tokens=ANTHROPIC_MAX_TOKENS,  # ceiling, not a target
+            system=SYSTEM_PROMPT_A4,
+            user_message=_build_user_message(cv_data),
+            context="Fields Generator",
+            reduce_input=_reduce_input,
+        )
+    except Exception as exc:
+        update_step(run_dir, "fields_generator", "failed")
+        raise ValueError(f"Fields Generator failed: {exc}") from exc
+
+    try:
+        # A4 returns a PATCH, not the CVData. Merge it into the mapped CVData.
+        merged = copy.deepcopy(cv_data)
+        merged["generated_fields"] = parsed.get("generated_fields", []) or []
+
+        present_position = (parsed.get("present_position") or "").strip()
+        if present_position and not (merged.get("present_position") or "").strip():
+            merged["present_position"] = present_position
+
+        # Donor-aware merge of project_overviews:
+        #  - GIZ: main_project_features is the ONLY rendered project text, so a
+        #    narrative is written for every project — OVERWRITE the terse extract.
+        #  - WB: main_project_features and activities_performed render separately,
+        #    so only FILL when empty (never overwrite / merge).
+        projects = merged.get("relevant_projects", [])
+        is_giz = donor == "giz"
+        for overview in parsed.get("project_overviews", []) or []:
+            try:
+                idx = int(overview.get("index"))
+            except (TypeError, ValueError):
+                continue
+            text = (overview.get("main_project_features") or "").strip()
+            if not text or not (0 <= idx < len(projects)):
+                continue
+            current = (projects[idx].get("main_project_features") or "").strip()
+            if is_giz or not current:
+                projects[idx]["main_project_features"] = text
+
+        cv_data_out = CVData.model_validate(merged)
+        generation_warnings = parsed.get("generation_warnings", []) or []
     except Exception as exc:
         update_step(run_dir, "fields_generator", "failed")
         raise ValueError(
-            f"Fields Generator returned invalid output: {exc}\n\nRaw output:\n{raw}"
+            f"Fields Generator produced an invalid patch: {exc}\n\n"
+            f"Parsed keys: {list(parsed.keys())}"
         ) from exc
 
     generated_dict = cv_data_out.model_dump()

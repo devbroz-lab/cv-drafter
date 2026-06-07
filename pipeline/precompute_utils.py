@@ -226,6 +226,49 @@ def compute_project_year(date_from: str | None, date_to: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Recovery-only input trimming (used by the parse-failure retry path)
+# ---------------------------------------------------------------------------
+
+def truncate_text_to_words(text: str, word_cap: int) -> str:
+    """Return *text* truncated to at most *word_cap* whitespace-delimited words.
+
+    Appends an ellipsis marker when truncation occurs so the model (and any
+    human reading the artifact) can see the text was shortened.  Empty / None
+    input returns ``""``.  This is used ONLY on the parse-failure recovery path
+    to shrink an oversized request before retrying — never on the happy path.
+    """
+    if not text:
+        return ""
+    words = text.split()
+    if len(words) <= word_cap:
+        return text
+    return " ".join(words[:word_cap]) + " […]"
+
+
+def truncate_project_text(
+    cv_data: dict[str, Any],
+    word_cap: int,
+    fields: tuple[str, ...] = ("main_project_features", "activities_performed"),
+) -> dict[str, Any]:
+    """Return a deep copy of *cv_data* with the given free-text project fields
+    word-capped to *word_cap*.
+
+    Recovery-only helper: A3/A4 (and A5/A6) call this from their ``reduce_input``
+    closures to shrink the request after a JSON parse / truncation failure, so
+    the retry sends provably *less* input than the attempt that failed.  The
+    happy path never calls this.
+    """
+    import copy
+    result = copy.deepcopy(cv_data)
+    for project in result.get("relevant_projects", []):
+        for field in fields:
+            val = project.get(field, "")
+            if val:
+                project[field] = truncate_text_to_words(val, word_cap)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Protected-field restoration (used by Agent 6 post-processing)
 # ---------------------------------------------------------------------------
 

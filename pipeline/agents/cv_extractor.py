@@ -16,9 +16,9 @@ from pathlib import Path
 from anthropic import Anthropic
 
 from models import CVData, RelevantProject
-from pipeline.config import ANTHROPIC_MODEL_EXTRACTOR, ANTHROPIC_MAX_TOKENS
+from pipeline.config import ANTHROPIC_MODEL_EXTRACTOR, ANTHROPIC_MAX_TOKENS_EXTRACTOR
 from pipeline.manifest import update_step
-from pipeline.utils import extract_json_object, strip_code_fences
+from pipeline.utils import call_agent_json
 from pipeline.utils.cefr import map_cefr, map_numeric_scale_inverted
 
 client = Anthropic()
@@ -551,39 +551,34 @@ def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
     """
     update_step(run_dir, "cv_extractor", "running")
 
-    with client.messages.stream(
-        model=ANTHROPIC_MODEL_EXTRACTOR,
-        max_tokens=ANTHROPIC_MAX_TOKENS,
-        system=_build_prompt(SYSTEM_PROMPT_A1),
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Extract the CV below into a CVData JSON object.\n\n"
-                    f"<donor>{params.get('donor', '')}</donor>\n\n"
-                    f"<cv>\n{cv_text}\n</cv>"
-                ),
-            }
-        ],
-    ) as stream:
-        response = stream.get_final_message()
+    user_message = (
+        "Extract the CV below into a CVData JSON object.\n\n"
+        f"<donor>{params.get('donor', '')}</donor>\n\n"
+        f"<cv>\n{cv_text}\n</cv>"
+    )
 
-    if response.stop_reason == "max_tokens":
-        update_step(run_dir, "cv_extractor", "failed")
-        raise ValueError(
-            "CV Extractor response was truncated (max_tokens reached). "
-            "Increase max_tokens or reduce CV length."
+    # A1 extracts raw text faithfully — there is no safe way to "reduce" its
+    # input, so no reduce_input is supplied: parse failures fail fast (as before).
+    try:
+        raw_obj = call_agent_json(
+            client=client,
+            model=ANTHROPIC_MODEL_EXTRACTOR,
+            max_tokens=ANTHROPIC_MAX_TOKENS_EXTRACTOR,  # ceiling, not a target
+            system=_build_prompt(SYSTEM_PROMPT_A1),
+            user_message=user_message,
+            context="CV Extractor",
+            reduce_input=None,
         )
-
-    raw = strip_code_fences(response.content[0].text.strip())
-    raw = extract_json_object(raw)
+    except Exception as exc:
+        update_step(run_dir, "cv_extractor", "failed")
+        raise
 
     try:
-        parsed = CVData.model_validate_json(raw)
+        parsed = CVData.model_validate(raw_obj)
     except Exception as exc:
         update_step(run_dir, "cv_extractor", "failed")
         raise ValueError(
-            f"CV Extractor returned invalid JSON: {exc}\n\nRaw output:\n{raw}"
+            f"CV Extractor returned schema-invalid data: {exc}"
         ) from exc
 
     # Inject upfront params — agent correctly leaves these empty during extraction
