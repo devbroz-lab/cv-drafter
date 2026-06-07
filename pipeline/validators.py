@@ -442,3 +442,89 @@ def check_tor_summarizer_warnings(run_dir: Path) -> list[dict]:
             })
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Per-step warning readers — backfill agent warnings that live ONLY in their
+# source artifact files into manifest.json so the polled /manifest channel
+# streams them in real time. Each returns dicts shaped for ``append_warning``
+# ({stage, kind, message, details?}) with stage = the manifest step name so the
+# UI can group warnings under their step. All best-effort: missing / unreadable
+# file → []. Idempotency is handled by ``append_warning`` itself.
+# ---------------------------------------------------------------------------
+
+
+def _load_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def extraction_warnings_for_manifest(run_dir: Path) -> list[dict]:
+    """Agent 1 extraction_warnings (cv_data.json) → manifest entries."""
+    cv = _load_json(run_dir / "cv_data.json")
+    if not cv:
+        return []
+    msgs = (cv.get("data", {}) or {}).get("extraction_warnings", []) or []
+    return [
+        {"stage": "cv_extractor", "kind": "extraction_warning", "message": str(m)}
+        for m in msgs
+        if str(m).strip()
+    ]
+
+
+def alignment_warnings_for_manifest(run_dir: Path) -> list[dict]:
+    """Agent 3 alignment.warnings (mapped_cv.json) → manifest entries."""
+    mapped = _load_json(run_dir / "mapped_cv.json")
+    if not mapped:
+        return []
+    msgs = (mapped.get("alignment", {}) or {}).get("warnings", []) or []
+    return [
+        {"stage": "cv_tor_mapper", "kind": "alignment_warning", "message": str(m)}
+        for m in msgs
+        if str(m).strip()
+    ]
+
+
+def generation_warnings_for_manifest(run_dir: Path) -> list[dict]:
+    """Agent 4 raw generation_warnings (generated_fields.json) → manifest entries.
+
+    These are the verbatim low-confidence/alignment notes A4 emits; surfacing
+    them here makes them visible during the run, not only at the end via /output.
+    """
+    gf = _load_json(run_dir / "generated_fields.json")
+    if not gf:
+        return []
+    msgs = gf.get("generation_warnings", []) or []
+    return [
+        {"stage": "fields_generator", "kind": "generation_warning", "message": str(m)}
+        for m in msgs
+        if str(m).strip()
+    ]
+
+
+def review_summary_for_manifest(run_dir: Path) -> list[dict]:
+    """Agent 5 review findings (generated_fields.json) → a single summary entry.
+
+    Full per-finding detail stays in GET /review and GET /output; this is a
+    compact signal for the polled /manifest channel.
+    """
+    gf = _load_json(run_dir / "generated_fields.json")
+    if not gf:
+        return []
+    review = gf.get("review")
+    if not isinstance(review, dict):
+        return []
+    high = len(review.get("high_severity", []) or [])
+    low = len(review.get("low_severity", []) or [])
+    if high == 0 and low == 0:
+        return []
+    return [{
+        "stage": "content_reviewer",
+        "kind": "review_findings",
+        "message": f"{high} high / {low} low severity finding(s)",
+        "details": {"high": high, "low": low, "passed": bool(review.get("passed", False))},
+    }]

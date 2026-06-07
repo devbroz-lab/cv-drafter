@@ -76,7 +76,10 @@ def create_manifest(
         "cv_path": cv_path,
         "tor_path": tor_path,
         "params": params,
-        "steps": [{"name": s, "status": "waiting", "completed_at": None} for s in STEP_ORDER],
+        "steps": [
+            {"name": s, "status": "waiting", "started_at": None, "completed_at": None}
+            for s in STEP_ORDER
+        ],
     }
     with manifest_lock(run_dir):
         _write(run_dir, manifest)
@@ -90,14 +93,23 @@ def load_manifest(run_dir: Path) -> dict:
 
 
 def update_step(run_dir: Path, step_name: str, status: str) -> None:
-    """Set *step_name* status in the manifest, recording a timestamp for terminal statuses."""
+    """Set *step_name* status in the manifest.
+
+    Records ``started_at`` the first time a step enters ``running`` and
+    ``completed_at`` when it reaches a terminal status. Both are ISO-8601 and
+    drive the UI's per-step timing (elapsed / "running for N seconds").
+    """
+    now = datetime.now(UTC).isoformat()
     with manifest_lock(run_dir):
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         for step in manifest["steps"]:
             if step["name"] == step_name:
                 step["status"] = status
+                # Stamp start once, on first transition to running.
+                if status == "running" and not step.get("started_at"):
+                    step["started_at"] = now
                 if status in _TERMINAL_STATUSES:
-                    step["completed_at"] = datetime.now(UTC).isoformat()
+                    step["completed_at"] = now
                 break
         _write(run_dir, manifest)
 
@@ -136,6 +148,16 @@ def append_warning(
     with manifest_lock(run_dir):
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         warnings: list = manifest.setdefault("warnings", [])
+        # Idempotent: skip if an identical (stage, kind, message) entry already
+        # exists. Phases can re-run (resume / re-approve / _run_if_needed), and
+        # the per-poll /manifest channel must not accumulate duplicates.
+        for existing in warnings:
+            if (
+                existing.get("stage") == stage
+                and existing.get("kind") == kind
+                and existing.get("message") == message
+            ):
+                return
         warnings.append({
             "stage": stage,
             "kind": kind,
@@ -143,6 +165,48 @@ def append_warning(
             "details": details or {},
         })
         _write(run_dir, manifest)
+
+
+# ---------------------------------------------------------------------------
+# Progress helpers (pure functions — used by GET /sessions/{id}/manifest)
+# ---------------------------------------------------------------------------
+
+
+def current_running_step(steps: list[dict]) -> str | None:
+    """Return the name of the step the pipeline is currently working on.
+
+    Priority: the step whose status is ``running``; else the first checkpoint
+    awaiting approval (``pending``); else ``None`` (idle / done / not started).
+    """
+    for step in steps:
+        if step.get("status") == "running":
+            return step.get("name")
+    for step in steps:
+        if step.get("status") == "pending" and str(step.get("name", "")).startswith("checkpoint_"):
+            return step.get("name")
+    return None
+
+
+def compute_progress(steps: list[dict]) -> int:
+    """Return an overall progress percentage (0–100) from step statuses.
+
+    Each step contributes a fraction of ``len(STEP_ORDER)``: terminal-complete
+    steps (``done`` / ``approved``) count 1.0; an actively in-flight step
+    (``running`` / ``pending`` / ``blocked``) counts 0.5; ``waiting`` / ``failed``
+    count 0. Gives the UI a monotonic-ish progress signal more accurate than the
+    coarse DB status.
+    """
+    if not steps:
+        return 0
+    total = len(STEP_ORDER) or len(steps)
+    score = 0.0
+    for step in steps:
+        st = step.get("status")
+        if st in ("done", "approved"):
+            score += 1.0
+        elif st in ("running", "pending", "blocked"):
+            score += 0.5
+    return max(0, min(100, round(score / total * 100)))
 
 
 def _write(run_dir: Path, manifest: dict) -> None:
