@@ -46,7 +46,7 @@ from pipeline.agents import (
     fields_generator,
     tor_summarizer,
 )
-from pipeline.extractor import extract_text
+from pipeline.extractor import extract_text, is_low_yield
 from pipeline.manifest import append_warning, create_manifest, get_step_status, update_step
 from pipeline.validators import (
     PipelineValidationError,
@@ -137,7 +137,54 @@ async def run_phase1(
         # ── Read full session row for params ──────────────────────────────
         row = get_session_row(session_id) or {}
 
-        # ── Extract ToR text (if uploaded) ────────────────────────────────
+        params = _build_params(row)
+
+        # ── Create run directory + manifest ───────────────────────────────
+        # Created BEFORE text extraction so extraction warnings can be streamed
+        # onto the polled /manifest channel.
+        run_dir = get_run_dir(session_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        create_manifest(
+            run_dir,
+            run_id=session_id,
+            cv_path=str(input_path),
+            tor_path=tor_storage_key or "",
+            params=params,
+        )
+
+        # ── Extract CV text (fail fast with a clear message) ──────────────
+        # The CV is mandatory. A parse failure or a document with no usable text
+        # (scanned/image-only PDF, empty file) must NOT feed an empty CV to
+        # Agent 1 — stop here with a recruiter-friendly message and a warning.
+        _CV_UNREADABLE = (
+            "Could not read the CV file — it may be corrupt or an unsupported variant."
+        )
+        _CV_NO_TEXT = (
+            "No extractable text found in the CV — the document may be scanned/"
+            "image-only or empty. Please upload a text-based DOCX or PDF."
+        )
+        try:
+            cv_text = extract_text(source_filename, source_bytes)
+        except Exception as parse_exc:
+            log.warning("Session %s CV extraction failed: %s", session_id, parse_exc)
+            update_step(run_dir, "cv_extractor", "failed")
+            append_warning(
+                run_dir, stage="cv_extractor", kind="extraction_failed",
+                message=_CV_UNREADABLE, details={"error": str(parse_exc)[:200]},
+            )
+            set_failed(session_id, _CV_UNREADABLE)
+            return
+        if is_low_yield(cv_text):
+            log.warning("Session %s CV extraction produced no usable text", session_id)
+            update_step(run_dir, "cv_extractor", "failed")
+            append_warning(
+                run_dir, stage="cv_extractor", kind="no_extractable_text",
+                message=_CV_NO_TEXT,
+            )
+            set_failed(session_id, _CV_NO_TEXT)
+            return
+
+        # ── Extract ToR text (optional; best-effort, never fatal) ─────────
         tor_text = ""
         if tor_storage_key:
             try:
@@ -149,21 +196,14 @@ async def run_phase1(
                 tor_text = extract_text(tor_filename, tor_bytes)
             except Exception as tor_exc:
                 log.warning("Could not extract ToR text for session %s: %s", session_id, tor_exc)
-        params = _build_params(row)
-
-        # ── Create run directory + manifest ───────────────────────────────
-        run_dir = get_run_dir(session_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        create_manifest(
-            run_dir,
-            run_id=session_id,
-            cv_path=str(input_path),
-            tor_path=tor_storage_key or "",
-            params=params,
-        )
-
-        # ── Extract CV text ───────────────────────────────────────────────
-        cv_text = extract_text(source_filename, source_bytes)
+            if is_low_yield(tor_text):
+                append_warning(
+                    run_dir, stage="tor_summarizer", kind="tor_low_text",
+                    message=(
+                        "The uploaded ToR yielded little or no extractable text; "
+                        "ToR-based tailoring may be limited."
+                    ),
+                )
 
         # ── Agents 1 & 2 in parallel ──────────────────────────────────────
         def _agent1() -> None:
