@@ -20,6 +20,10 @@ Also covers Mismatch 3 fix — GIZ CEFR enrichment:
 import pytest
 from unittest.mock import MagicMock, patch
 
+def _applied_paths(applied):
+    return [item["path"] if isinstance(item, dict) else item for item in applied]
+
+
 from pipeline.agents.field_editor import (
     FIELD_WORD_LIMITS,
     _field_key_from_path,
@@ -188,7 +192,7 @@ class TestRunFieldEditorPassesContext:
         _, kwargs = mock_call.call_args
         assert kwargs.get("donor") == "giz"
         assert kwargs.get("cv_context") == cv_context
-        assert applied == ["key_qualifications[0]"]
+        assert _applied_paths(applied) == ["key_qualifications[0]"]
         assert mutated["key_qualifications"][0] == "Shorter text"
 
     def test_no_context_still_applies_edit(self):
@@ -202,7 +206,7 @@ class TestRunFieldEditorPassesContext:
                 generated, None, edits, MagicMock(),
             )
 
-        assert applied == ["key_qualifications[0]"]
+        assert _applied_paths(applied) == ["key_qualifications[0]"]
         assert mutated["key_qualifications"][0] == "Rewritten"
 
 
@@ -252,7 +256,7 @@ class TestCefrEnrichment:
 
         # "fluent" maps to "C2" via _map_cefr
         assert captured_current_value == "C2"
-        assert applied == ["languages[0].reading_cefr"]
+        assert _applied_paths(applied) == ["languages[0].reading_cefr"]
         assert mutated["languages"][0]["reading_cefr"] == "B2"
 
     def test_write_targets_cefr_field_not_raw(self):

@@ -16,7 +16,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from api.config import settings  # noqa: E402
-from api.routers import auth, health, sessions  # noqa: E402
+from api.routers import auth, health, metering, sessions  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -64,4 +64,5 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(metering.router)
 app.include_router(sessions.router)

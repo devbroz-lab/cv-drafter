@@ -10,7 +10,11 @@
 | **[api_quick_reference.sh](./ZZZZ/api_quick_reference.sh)** | ZZZZ/ | Ready-to-use bash/curl commands (executable) |
 | **[api_client_example.py](./ZZZZ/api_client_example.py)** | ZZZZ/ | Python client class with full workflow example |
 | **[CLAUDE.md](./CLAUDE.md)** | Root | Architecture, project overview, and conventions |
-| **[sessions_schema_v5.sql](./ZZZZ/sessions_schema_v5.sql)** | ZZZZ/ | Database migration (run in Supabase) |
+| **[api/migrations/000_sessions_table_schema.sql](../api/migrations/000_sessions_table_schema.sql)** | api/migrations/ | Base `sessions` table (run first) |
+| **[api/migrations/](./../api/migrations/)** | api/migrations/ | Full chain: 000 → 001 → 002 → 003 |
+| **[sessions_schema_v5.sql](./ZZZZ/sessions_schema_v5.sql)** | ZZZZ/ | Legacy copy of sessions schema (prefer `000_` in migrations) |
+| **[DEV_SETUP.md](./DEV_SETUP.md)** | markdowns/ | Dev vs prod: `develop`/`main`, Supabase, Railway, env vars |
+| **[METERING.md](./METERING.md)** | markdowns/ | Credit metering schema and API |
 
 ---
 

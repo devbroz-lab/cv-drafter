@@ -494,6 +494,16 @@ def run(run_dir: Path) -> CVData:
         }
     )
     gf_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, gf_path)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "generated_fields Storage sync failed for %s", run_dir.name, exc_info=True
+        )
 
     update_step(run_dir, "fields_generator", "done")
     return cv_data_out

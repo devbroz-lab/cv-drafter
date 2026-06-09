@@ -21,8 +21,8 @@ edits : list[dict]
 
 Returns
 -------
-applied : list[str]
-    Field paths where the edit was successfully written.
+applied : list[dict]
+    Each item is {"path", "instruction", "previous_value", "new_value"}.
 skipped : list[dict]
     Each item is {"path": str, "reason": str}. Reason is capped at
     200 characters with a trailing ellipsis if truncated. Pipeline
@@ -175,6 +175,12 @@ def _truncate_reason(reason: str) -> str:
     if len(reason) <= _SKIP_REASON_MAX_LEN:
         return reason
     return reason[: _SKIP_REASON_MAX_LEN - 1] + "\u2026"
+
+
+def _preview_value(value: object) -> str:
+    """Collapse whitespace and cap scalar values for API display."""
+    text = " ".join(str(value).split())
+    return _truncate_reason(text)
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +650,7 @@ def run_field_editor(
     *,
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[dict, list[str], list[dict]]:
+) -> tuple[dict, list[dict], list[dict]]:
     """
     Apply edits sequentially to a deep copy of `generated`.
 
@@ -679,7 +685,7 @@ def run_field_editor(
     """
     import copy
     mutated = copy.deepcopy(generated)
-    applied: list[str] = []
+    applied: list[dict] = []
     skipped: list[dict] = []
 
     for i, edit in enumerate(edits, start=1):
@@ -796,7 +802,14 @@ def run_field_editor(
             continue
 
         log.info("  applied '%s' → %s", field_path, new_value[:120])
-        applied.append(field_path)
+        applied.append(
+            {
+                "path": field_path,
+                "instruction": instruction,
+                "previous_value": _preview_value(current_value),
+                "new_value": _preview_value(new_value),
+            }
+        )
 
     return mutated, applied, skipped
 
@@ -811,7 +824,7 @@ def run(
     edits: list[dict],
     donor: str = "",
     cv_context: dict | None = None,
-) -> tuple[list[str], list[dict]]:
+) -> tuple[list[dict], list[dict], str]:
     """
     Pipeline entry point called by the HTTP handler (POST /field-edit).
 
@@ -848,6 +861,12 @@ def run(
         edit promoting the source is reflected accurately.
     """
     gf_path = run_dir / "generated_fields.json"
+    try:
+        from api.services.run_artifacts import hydrate_run_artifact
+
+        hydrate_run_artifact(run_dir.name, run_dir, "generated_fields.json")
+    except Exception:
+        pass
     if not gf_path.exists():
         raise FileNotFoundError(
             f"generated_fields.json not found in {run_dir}. "
@@ -881,6 +900,14 @@ def run(
     # Write back — preserve all top-level keys, only replace "generated"
     gf["generated"] = mutated
     gf_path.write_text(json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, gf_path)
+    except Exception:
+        log.warning(
+            "generated_fields Storage sync failed for %s", run_dir.name, exc_info=True
+        )
 
     log.info(
         "field_editor complete — applied=%s skipped=%s kq_source=%s run_dir=%s",

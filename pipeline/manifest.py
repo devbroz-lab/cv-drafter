@@ -214,3 +214,13 @@ def _write(run_dir: Path, manifest: dict) -> None:
         json.dumps(manifest, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, run_dir / "manifest.json")
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "manifest Storage sync failed for %s", run_dir.name, exc_info=True
+        )

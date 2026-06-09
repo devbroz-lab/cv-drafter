@@ -505,6 +505,14 @@ async def start_session_processing(
             detail="Source file must be uploaded before starting",
         )
 
+    from api.services.metering import InsufficientCreditsError, reserve_pipeline_run
+    from api.services.metering.http import raise_insufficient_credits
+
+    try:
+        reserve_pipeline_run(user_id=current_user.user_id, session_id=session_id)
+    except InsufficientCreditsError as exc:
+        raise_insufficient_credits(exc)
+
     from pipeline.orchestrator import run_phase1
 
     background_tasks.add_task(
@@ -632,8 +640,11 @@ async def get_session_manifest(
     from pipeline.manifest import load_manifest
     from pipeline.paths import get_run_dir
 
+    from api.services.run_artifacts import hydrate_run_artifact
+
     run_dir = get_run_dir(session_id)
-    if not run_dir.exists() or not (run_dir / "manifest.json").exists():
+    hydrate_run_artifact(session_id, run_dir, "manifest.json")
+    if not (run_dir / "manifest.json").is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Manifest not found — pipeline has not started yet",
@@ -709,11 +720,13 @@ async def get_tor_pools(
     """
     row = _require_owned_session(session_id, current_user.user_id)
 
+    from api.services.run_artifacts import hydrate_run_artifact
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "tor_data.json")
     tor_path = run_dir / "tor_data.json"
-    if not tor_path.exists():
+    if not tor_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="tor_data.json not found — ToR summarizer may not have completed yet",
@@ -760,11 +773,13 @@ async def select_tor_pool(
     """Persist selected_pool_index in runs/{session_id}/tor_data.json."""
     row = _require_owned_session(session_id, current_user.user_id)
 
+    from api.services.run_artifacts import hydrate_run_artifact, push_run_artifact
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "tor_data.json")
     tor_path = run_dir / "tor_data.json"
-    if not tor_path.exists():
+    if not tor_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="tor_data.json not found — ToR summarizer may not have completed yet",
@@ -785,6 +800,7 @@ async def select_tor_pool(
 
         tor_raw["selected_pool_index"] = selected_idx
         tor_path.write_text(json.dumps(tor_raw, indent=2, ensure_ascii=False), encoding=UTF_8)
+        push_run_artifact(session_id, tor_path)
         selected_pool = resolve_selected_tor_pool(
             tor_raw,
             context="api.sessions.select_tor_pool",
@@ -881,9 +897,12 @@ async def approve_checkpoint(
     if checkpoint == "checkpoint_1":
         from pipeline.paths import get_run_dir as _get_run_dir
 
+        from api.services.run_artifacts import hydrate_run_artifact
+
         _run_dir_c1 = _get_run_dir(session_id)
+        hydrate_run_artifact(session_id, _run_dir_c1, "tor_data.json")
         tor_path = _run_dir_c1 / "tor_data.json"
-        if not tor_path.exists():
+        if not tor_path.is_file():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="tor_data.json missing. Wait for checkpoint_1 artifacts before approval.",
@@ -958,7 +977,10 @@ async def get_review(
 
     from pipeline.paths import get_run_dir
 
+    from api.services.run_artifacts import hydrate_run_artifact
+
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     gf_path = run_dir / "generated_fields.json"
     if not gf_path.exists():
         raise HTTPException(
@@ -1011,10 +1033,12 @@ async def resolve_review(
 
     import json as _json
 
+    from api.services.run_artifacts import hydrate_run_artifact, push_run_artifact
     from pipeline.manifest import update_step as manifest_update_step
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     gf_path = run_dir / "generated_fields.json"
 
     if not gf_path.exists():
@@ -1034,6 +1058,7 @@ async def resolve_review(
                 set_by_dot_path(generated, dot_path, value)
             gf["generated"] = generated
             gf_path.write_text(_json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+            push_run_artifact(session_id, gf_path)
         except DotPathError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except Exception as exc:
@@ -1049,6 +1074,7 @@ async def resolve_review(
             if gf.get("review"):
                 gf["review"]["passed"] = True
             gf_path.write_text(_json.dumps(gf, indent=2, ensure_ascii=False), encoding="utf-8")
+            push_run_artifact(session_id, gf_path)
             manifest_update_step(run_dir, "content_reviewer", "done")
         except Exception as exc:
             raise HTTPException(
@@ -1116,6 +1142,25 @@ async def submit_field_edits(
         for e in payload.edits
     ]
 
+    current_round = int(row.get("round") or 1)
+    billing_round = current_round + 1
+
+    from api.services.metering import (
+        InsufficientCreditsError,
+        debit_revision,
+        refund_revision,
+    )
+    from api.services.metering.http import raise_insufficient_credits
+
+    try:
+        debit_revision(
+            user_id=current_user.user_id,
+            session_id=session_id,
+            round_num=billing_round,
+        )
+    except InsufficientCreditsError as exc:
+        raise_insufficient_credits(exc)
+
     # Increment the round counter so the re-rendered output.docx gets the
     # correct label (round_02_giz.docx, round_03_giz.docx, …).
     new_round = increment_round(session_id)
@@ -1132,6 +1177,18 @@ async def submit_field_edits(
             session_id=session_id, edits=edits
         )
     except Exception as exc:
+        try:
+            refund_revision(
+                user_id=current_user.user_id,
+                session_id=session_id,
+                round_num=billing_round,
+            )
+        except Exception:
+            log.exception(
+                "Failed to refund revision credits for session %s round %s",
+                session_id,
+                billing_round,
+            )
         set_failed(session_id, str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1167,7 +1224,10 @@ async def get_output(
 
     from pipeline.paths import get_run_dir
 
+    from api.services.run_artifacts import hydrate_run_artifact
+
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     gf_path = run_dir / "generated_fields.json"
 
     if not gf_path.exists():
@@ -1223,9 +1283,11 @@ async def get_warnings(
     """
     _require_owned_session(session_id, current_user.user_id)
 
+    from api.services.run_artifacts import hydrate_run_artifact
     from pipeline.paths import get_run_dir
 
     run_dir = get_run_dir(session_id)
+    hydrate_run_artifact(session_id, run_dir, "generated_fields.json")
     warnings: list[WarningEntry] = []
 
     def _add(stage: str, kind: str, message, details=None) -> None:

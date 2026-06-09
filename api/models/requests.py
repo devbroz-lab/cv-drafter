@@ -273,6 +273,21 @@ class FieldEditRequest(BaseModel):
     )
 
 
+class FieldEditApplied(BaseModel):
+    """A single edit that was written to generated_fields."""
+
+    path: str = Field(description="Dot-path field that was updated")
+    instruction: str = Field(description="Recruiter instruction echoed from the request")
+    previous_value: str = Field(
+        description="Value before the edit (truncated for display)",
+        max_length=201,
+    )
+    new_value: str = Field(
+        description="Value after the edit (truncated for display)",
+        max_length=201,
+    )
+
+
 class FieldEditSkip(BaseModel):
     """A single edit that was not applied, with the reason it was skipped.
 
@@ -301,7 +316,7 @@ class FieldEditResponse(BaseModel):
     session_id: str
     status: SessionStatus
     round: int
-    applied: list[str]
+    applied: list[FieldEditApplied]
     skipped: list[FieldEditSkip]  # was list[str] — see BREAKING CHANGE note in API.md
     message: str
     kq_source: Literal["ai_generated", "extracted", "absent"] = Field(

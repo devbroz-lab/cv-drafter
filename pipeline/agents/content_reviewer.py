@@ -745,6 +745,16 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
     gf_raw["generated"] = cv_data_out.model_dump()
     gf_raw["review"] = review
     gf_path.write_text(json.dumps(gf_raw, indent=2, ensure_ascii=False), encoding=UTF_8)
+    try:
+        from api.services.run_artifacts import push_run_artifact
+
+        push_run_artifact(run_dir.name, gf_path)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "generated_fields Storage sync failed for %s", run_dir.name, exc_info=True
+        )
 
     if not passed:
         update_step(run_dir, "content_reviewer", "blocked")
