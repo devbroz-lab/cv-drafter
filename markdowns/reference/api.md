@@ -3,7 +3,7 @@ title: HTTP API Surface
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - api/routers/sessions.py
   - api/models/requests.py
@@ -27,7 +27,7 @@ routes require `Authorization: Bearer <Supabase JWT>` (except `GET /health`). Tr
 | POST | `/sessions/{id}/upload/source` | Upload CV (`.docx`/`.pdf`) |
 | POST | `/sessions/{id}/upload/tor` | Upload ToR (optional) |
 | POST | `/sessions/{id}/start` | `queued` → schedule Phase 1 (returns immediately, `processing`) |
-| POST | `/sessions/{id}/tor/select-pool` | Prune ToR pools to the chosen one (index 0) |
+| POST | `/sessions/{id}/tor/select-pool` | Record the chosen ToR pool — sets `selected_pool_index` (pools are retained, not pruned) |
 | POST | `/sessions/{id}/approve/{checkpoint}` | Approve `checkpoint_1\|2\|3`; schedule the next phase |
 | POST | `/sessions/{id}/resolve` | Clear a reviewer block / apply overrides; resume A6 |
 | POST | `/sessions/{id}/field-edit` | Post-completion targeted edits (synchronous; → `checkpoint_3_pending`) |

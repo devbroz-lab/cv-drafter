@@ -3,7 +3,7 @@ title: A5 — Content Reviewer
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/agents/content_reviewer.py
   - pipeline/validation.py

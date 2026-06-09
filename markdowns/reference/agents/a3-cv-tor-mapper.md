@@ -3,7 +3,7 @@ title: A3 — CV–ToR Mapper
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/agents/cv_tor_mapper.py
   - pipeline/precompute_utils.py

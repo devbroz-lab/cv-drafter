@@ -3,7 +3,7 @@ title: Text Extraction (DOCX & PDF)
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/extractor/__init__.py
   - pipeline/extractor/docx_extractor.py

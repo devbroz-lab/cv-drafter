@@ -3,7 +3,7 @@ title: 0002 — Extraction hardening (DOCX robustness + pdfplumber + fail-fast)
 type: design
 status: accepted
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/extractor/docx_extractor.py
   - pipeline/extractor/pdf_extractor.py

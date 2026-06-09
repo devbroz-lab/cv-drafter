@@ -3,7 +3,7 @@ title: Frontend — Pipeline Progress & Agent Warnings
 type: frontend
 status: current
 owner: frontend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - api/routers/sessions.py
   - api/models/requests.py

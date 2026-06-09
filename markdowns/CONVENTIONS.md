@@ -3,7 +3,7 @@ title: Documentation Conventions
 type: meta
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs: []
 related: [INDEX.md]
 ---
@@ -60,7 +60,7 @@ title: A4 — Fields Generator
 type: reference            # meta | reference | design | frontend
 status: current            # current | superseded  (ADRs: accepted | superseded)
 owner: backend             # backend | frontend | infra
-last_verified: 2026-06-08  # date the doc was last checked against the code
+last_verified: 2026-06-09  # date the doc was last checked against the code
 code_refs:                 # source files this doc describes (paths from repo root)
   - pipeline/agents/fields_generator.py
 related:                   # other docs / ADRs

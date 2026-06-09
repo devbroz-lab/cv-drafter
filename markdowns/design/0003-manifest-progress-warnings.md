@@ -3,7 +3,7 @@ title: 0003 — Real-time progress & warnings on the polled /manifest channel
 type: design
 status: accepted
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/manifest.py
   - pipeline/validators.py

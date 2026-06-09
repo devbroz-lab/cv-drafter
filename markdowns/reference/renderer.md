@@ -3,7 +3,7 @@ title: Renderer (GIZ & World Bank)
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - templates/registry.py
   - templates/giz.py

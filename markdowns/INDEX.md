@@ -3,7 +3,7 @@ title: Documentation Index
 type: meta
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs: []
 related: [CONVENTIONS.md]
 ---

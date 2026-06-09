@@ -3,7 +3,7 @@ title: A4 — Fields Generator
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/agents/fields_generator.py
   - pipeline/validators.py

@@ -3,7 +3,7 @@ title: 0001 — Lean agent output contracts + parse-failure recovery
 type: design
 status: accepted
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/utils/llm.py
   - pipeline/config.py

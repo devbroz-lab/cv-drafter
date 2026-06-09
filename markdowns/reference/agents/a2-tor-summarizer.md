@@ -3,7 +3,7 @@ title: A2 — ToR Summarizer
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/agents/tor_summarizer.py
   - pipeline/validators.py
@@ -40,9 +40,10 @@ role the ToR describes). Runs in parallel with A1 during Phase 1.
 ## Output handling (`tor_summarizer.run`)
 
 Parses `{ "pools": [...] }`, validates each element as `DistilledToR`, writes the envelope with
-`selected_pool_index: 0`. The UI prunes to the chosen pool at checkpoint 1
-(`POST /tor/select-pool`); downstream agents resolve the ToR via `resolve_tor_for_agents`
-(`pipeline/utils/_helpers.py`).
+`selected_pool_index: 0`. At checkpoint 1 the UI records the chosen pool's index via
+`POST /tor/select-pool` (updating `selected_pool_index`, **not** pruning the `pools` array);
+downstream agents then resolve the active ToR as `pools[selected_pool_index]` via
+`resolve_tor_for_agents` (`pipeline/utils/_helpers.py`).
 
 ## No-ToR path
 

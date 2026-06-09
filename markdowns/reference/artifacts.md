@@ -3,7 +3,7 @@ title: Run-Directory Artifacts
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/manifest.py
   - pipeline/artifacts.py
@@ -44,8 +44,9 @@ applied when needed. Consumed by A3.
 
 ### `tor_data.json` — A2 output
 Envelope `{approved, approved_at, pools: [DistilledToR, …], selected_pool_index}`. A2 may emit
-multiple expert-role pools; the UI prunes to the chosen one at checkpoint 1
-(`POST /tor/select-pool` → one pool, index 0). Downstream agents resolve the ToR via
+multiple expert-role pools; at checkpoint 1 the UI records the chosen pool's index via
+`POST /tor/select-pool` (it sets `selected_pool_index` — the `pools` array is retained, **not**
+pruned). Downstream agents resolve the active ToR as `pools[selected_pool_index]` via
 `resolve_tor_for_agents` / `resolve_selected_tor_pool` (`pipeline/utils/_helpers.py`). Consumed by
 A3, A4, A5, A6.
 

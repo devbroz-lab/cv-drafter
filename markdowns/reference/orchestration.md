@@ -3,7 +3,7 @@ title: Orchestration — Phases, Status, Manifest
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/orchestrator.py
   - pipeline/manifest.py
@@ -88,7 +88,7 @@ So warnings appear on the polled `/manifest` channel progressively as the run ad
 
 ## Post-completion: the Field Editor (A7)
 
-`POST /field-edit` (valid only at `completed`) calls `run_field_editor_task` **synchronously** inside
+`POST /field-edit` (valid at `completed` or `checkpoint_3_pending`) calls `run_field_editor_task` **synchronously** inside
 the HTTP handler (so the response carries applied/skipped), increments `sessions.round`, resets the
 `checkpoint_3` + `renderer` manifest steps, and returns to `checkpoint_3_pending`. Approving
 `checkpoint_3` re-runs Phase 4. See `reference/agents/a7-field-editor.md`.

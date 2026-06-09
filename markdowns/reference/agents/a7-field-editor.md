@@ -3,7 +3,7 @@ title: A7 — Field Editor
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-08
+last_verified: 2026-06-09
 code_refs:
   - pipeline/agents/field_editor.py
   - pipeline/orchestrator.py
@@ -20,7 +20,8 @@ Applies targeted, user-directed natural-language edits to specific fields **afte
 complete. Out of band — not part of Phases 1–4 and **has no manifest step**.
 
 - **Model:** Sonnet (`ANTHROPIC_MODEL`), called once per edit (non-streaming `messages.create`).
-- **Trigger:** `POST /sessions/{id}/field-edit` (valid only at `completed`).
+- **Trigger:** `POST /sessions/{id}/field-edit` (valid at `completed` or `checkpoint_3_pending` —
+  the latter lets the user resubmit edits skipped on a prior call without a full re-render).
 - **Output:** mutates `generated_fields.json["generated"]` in place (preserves all other keys).
 
 ## Flow
