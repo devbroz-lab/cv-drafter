@@ -46,14 +46,18 @@ from pipeline.agents import (
     fields_generator,
     tor_summarizer,
 )
-from pipeline.extractor import extract_text
+from pipeline.extractor import extract_text, is_low_yield
 from pipeline.manifest import append_warning, create_manifest, get_step_status, update_step
 from pipeline.validators import (
     PipelineValidationError,
+    alignment_warnings_for_manifest,
     check_compressor_warnings,
     check_content_reviewer_warnings,
     check_fields_generator_warnings,
     check_tor_summarizer_warnings,
+    extraction_warnings_for_manifest,
+    generation_warnings_for_manifest,
+    review_summary_for_manifest,
     validate_fields_generator_output,
 )
 from pipeline.paths import RUNS_ROOT, get_run_dir
@@ -85,6 +89,17 @@ def _run_if_needed(run_dir: Path, step_name: str, fn, *args, **kwargs) -> None:
     if get_step_status(run_dir, step_name) == "done":
         return
     fn(*args, **kwargs)
+
+
+def _emit_warnings(run_dir: Path, session_id: str, warns: list[dict]) -> None:
+    """Log + append a list of warning dicts to manifest.json (idempotent).
+
+    Used to stream agent warnings onto the polled /manifest channel as each
+    phase completes. ``append_warning`` de-dupes identical (stage, kind, message).
+    """
+    for w in warns:
+        log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
+        append_warning(run_dir, **w)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +137,54 @@ async def run_phase1(
         # ── Read full session row for params ──────────────────────────────
         row = get_session_row(session_id) or {}
 
-        # ── Extract ToR text (if uploaded) ────────────────────────────────
+        params = _build_params(row)
+
+        # ── Create run directory + manifest ───────────────────────────────
+        # Created BEFORE text extraction so extraction warnings can be streamed
+        # onto the polled /manifest channel.
+        run_dir = get_run_dir(session_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        create_manifest(
+            run_dir,
+            run_id=session_id,
+            cv_path=str(input_path),
+            tor_path=tor_storage_key or "",
+            params=params,
+        )
+
+        # ── Extract CV text (fail fast with a clear message) ──────────────
+        # The CV is mandatory. A parse failure or a document with no usable text
+        # (scanned/image-only PDF, empty file) must NOT feed an empty CV to
+        # Agent 1 — stop here with a recruiter-friendly message and a warning.
+        _CV_UNREADABLE = (
+            "Could not read the CV file — it may be corrupt or an unsupported variant."
+        )
+        _CV_NO_TEXT = (
+            "No extractable text found in the CV — the document may be scanned/"
+            "image-only or empty. Please upload a text-based DOCX or PDF."
+        )
+        try:
+            cv_text = extract_text(source_filename, source_bytes)
+        except Exception as parse_exc:
+            log.warning("Session %s CV extraction failed: %s", session_id, parse_exc)
+            update_step(run_dir, "cv_extractor", "failed")
+            append_warning(
+                run_dir, stage="cv_extractor", kind="extraction_failed",
+                message=_CV_UNREADABLE, details={"error": str(parse_exc)[:200]},
+            )
+            set_failed(session_id, _CV_UNREADABLE)
+            return
+        if is_low_yield(cv_text):
+            log.warning("Session %s CV extraction produced no usable text", session_id)
+            update_step(run_dir, "cv_extractor", "failed")
+            append_warning(
+                run_dir, stage="cv_extractor", kind="no_extractable_text",
+                message=_CV_NO_TEXT,
+            )
+            set_failed(session_id, _CV_NO_TEXT)
+            return
+
+        # ── Extract ToR text (optional; best-effort, never fatal) ─────────
         tor_text = ""
         if tor_storage_key:
             try:
@@ -134,21 +196,14 @@ async def run_phase1(
                 tor_text = extract_text(tor_filename, tor_bytes)
             except Exception as tor_exc:
                 log.warning("Could not extract ToR text for session %s: %s", session_id, tor_exc)
-        params = _build_params(row)
-
-        # ── Create run directory + manifest ───────────────────────────────
-        run_dir = get_run_dir(session_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        create_manifest(
-            run_dir,
-            run_id=session_id,
-            cv_path=str(input_path),
-            tor_path=tor_storage_key or "",
-            params=params,
-        )
-
-        # ── Extract CV text ───────────────────────────────────────────────
-        cv_text = extract_text(source_filename, source_bytes)
+            if is_low_yield(tor_text):
+                append_warning(
+                    run_dir, stage="tor_summarizer", kind="tor_low_text",
+                    message=(
+                        "The uploaded ToR yielded little or no extractable text; "
+                        "ToR-based tailoring may be limited."
+                    ),
+                )
 
         # ── Agents 1 & 2 in parallel ──────────────────────────────────────
         def _agent1() -> None:
@@ -167,6 +222,9 @@ async def run_phase1(
         for w in check_tor_summarizer_warnings(run_dir):
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
+
+        # Stream A1 extraction warnings onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, extraction_warnings_for_manifest(run_dir))
 
         # ── Halt at checkpoint 1 ──────────────────────────────────────────
         update_step(run_dir, "checkpoint_1", "pending")
@@ -197,6 +255,10 @@ async def run_phase2(*, session_id: str) -> None:
 
     try:
         _run_if_needed(run_dir, "cv_tor_mapper", cv_tor_mapper.run, run_dir)
+
+        # Stream A3 alignment warnings onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, alignment_warnings_for_manifest(run_dir))
+
         update_step(run_dir, "checkpoint_2", "pending")
         set_checkpoint_pending(session_id, 2)
         log.info("Session %s reached checkpoint_2_pending", session_id)
@@ -249,6 +311,9 @@ async def run_phase3(*, session_id: str) -> None:
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
 
+        # Stream A4 raw generation warnings onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, generation_warnings_for_manifest(run_dir))
+
         if get_step_status(run_dir, "content_reviewer") != "done":
             _, passed = content_reviewer.run(run_dir)
             if not passed:
@@ -262,6 +327,9 @@ async def run_phase3(*, session_id: str) -> None:
         for w in check_content_reviewer_warnings(run_dir):
             log.info("Session %s soft-flag [%s]: %s", session_id, w["kind"], w["message"])
             append_warning(run_dir, **w)
+
+        # Stream A5 review-findings summary onto the polled /manifest channel.
+        _emit_warnings(run_dir, session_id, review_summary_for_manifest(run_dir))
 
         await _run_compressor_and_halt(session_id, run_dir)
 
