@@ -32,7 +32,9 @@ certifi==2026.4.22
 cffi==2.0.0
     # via cryptography
 charset-normalizer==3.4.7
-    # via requests
+    # via
+    #   pdfminer-six
+    #   requests
 click==8.4.0
     # via
     #   pyiceberg
@@ -44,6 +46,7 @@ colorama==0.4.6
 cryptography==48.0.0
     # via
     #   google-auth
+    #   pdfminer-six
     #   pyjwt
 deprecation==2.1.0
     # via
@@ -127,6 +130,14 @@ multidict==6.7.1
     # via yarl
 packaging==26.2
     # via deprecation
+pdfminer-six==20251230
+    # via pdfplumber
+pdfplumber==0.11.9
+    # via
+    #   -r requirements.in
+    #   cv-reformatter-backend
+pillow==12.2.0
+    # via pdfplumber
 postgrest==2.28.3
     # via supabase
 propcache==0.5.2
@@ -170,6 +181,8 @@ pypdf==6.10.2
     # via
     #   -r requirements.in
     #   cv-reformatter-backend
+pypdfium2==5.9.0
+    # via pdfplumber
 pyroaring==1.1.0
     # via pyiceberg
 python-dateutil==2.9.0.post0
