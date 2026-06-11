@@ -16,6 +16,7 @@ _DEFAULT_ALLOWED_EMAILS = frozenset(
         "qamarali9584@gmail.com",
         "yashs9131@gmail.com",
         "mohdazam0453@gmail.com",
+        "stefan.salow@gfa-group.de",
     }
 )
 
