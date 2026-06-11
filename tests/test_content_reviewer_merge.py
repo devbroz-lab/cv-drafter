@@ -8,15 +8,36 @@ existing deterministic post-processing. These tests monkeypatch the LLM helper.
 
 import json
 
-from models import CVData, DistilledToR, GeneratedField, PersonalInfo, RelevantProject
+from models import (
+    CountryExperience,
+    CVData,
+    DistilledToR,
+    Education,
+    GeneratedField,
+    LanguageProficiency,
+    PersonalInfo,
+    RelevantProject,
+)
 from pipeline.agents import content_reviewer
 from pipeline.manifest import create_manifest
 
 
 def _setup_run_dir(run_dir, *, proposed_position="Expert 4: Regulatory Specialist"):
+    # All GIZ-required fields are populated so the empty-required-field
+    # post-processor does not inject "human review" findings (which would
+    # otherwise force passed=False). Tests that exercise emptiness live in
+    # tests/test_content_reviewer_required_fields.py.
     cv = CVData(
-        personal_info=PersonalInfo(first_names="Ada"),
+        personal_info=PersonalInfo(
+            first_names="Ada",
+            nationality="German",
+            date_of_birth="July 7 1980",
+            place_of_residence="Berlin, Germany",
+        ),
         proposed_position=proposed_position,
+        education=[Education(institution="MIT", degree="MSc")],
+        languages=[LanguageProficiency(language="English", reading_raw="Fluent")],
+        countries_of_experience=[CountryExperience(country="Germany")],
         relevant_projects=[RelevantProject(project_name="P1", main_project_features="ctx")],
         generated_fields=[
             GeneratedField(

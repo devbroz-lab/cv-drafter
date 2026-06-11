@@ -3,13 +3,14 @@ title: Data Model — CVData, DistilledToR, FormatProfile
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-09
+last_verified: 2026-06-11
 code_refs:
   - models.py
 related:
   - reference/artifacts.md
   - reference/agents/a1-cv-extractor.md
   - reference/renderer.md
+  - design/0004-empty-field-review-flags-countries-derivation-and-render-placeholders.md
 ---
 
 # Data Model
@@ -40,8 +41,9 @@ the schema is a **superset** of every donor's fields, and each renderer picks wh
 | `education[]` | `Education` | institution, dates, degree, major |
 | `key_qualifications[]` | str | extracted profile bullets (GIZ source material) |
 | `certifications[]` / `membership_professional_bodies` | list / str | dual-routed credentials |
-| `other_skills[]` / `training[]` / `publications[]` | str lists | label-driven routing in A1 |
-| `countries_of_experience[]` | `CountryExperience` | country + date range |
+| `other_skills` / `membership_professional_bodies` | str | free text, joined with `"; "` (legacy lists coerced) |
+| `training[]` / `publications[]` | str lists | label-driven routing in A1 |
+| `countries_of_experience[]` | `CountryExperience` | country + date range; derived from project/employment locations when no dedicated CV section exists (A1) |
 | `languages[]` | `LanguageProficiency` | `*_raw`, `*_cefr`, `cefr_inferred` |
 | `employment_record[]` | `EmploymentRecord` | WB employment history (GIZ leaves `[]`) |
 | `relevant_projects[]` | `RelevantProject` | the core experience section |

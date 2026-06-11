@@ -207,7 +207,7 @@ Only these fields are eligible for compression:
 - generated_fields: content (for each GeneratedField item)
 - key_qualifications (extracted list on CVData)
 - other_relevant_info
-- other_skills (each item)
+- other_skills (free-text string)
 - training (each item)
 - publications (each item)
 

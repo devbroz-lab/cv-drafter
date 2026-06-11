@@ -55,6 +55,48 @@ from pipeline.validation import (
 
 client = Anthropic()
 
+
+# ---------------------------------------------------------------------------
+# Donor-aware required-field policy (Feature: empty-field human-review flags)
+# ---------------------------------------------------------------------------
+# Deterministic post-processing injects a high_severity "human review" finding
+# for each REQUIRED field that is empty in the generated CV. This is review
+# policy (which empty fields should block a run), so it lives with the reviewer
+# rather than in models.FORMAT_PROFILES.
+#
+# Each spec: {"path", "label", optional "also_accept": [alt_paths]}.
+# Keep this set aligned with the per-donor placeholder fields in
+# templates/giz.py and templates/wb.py (_build_context) — both encode the same
+# "which fields must the donor show" policy. GIZ deliberately omits
+# employment_record (not rendered for GIZ).
+REQUIRED_FIELDS_BY_DONOR: dict[str, list[dict]] = {
+    "giz": [
+        {"path": "personal_info.date_of_birth", "label": "Date of birth"},
+        {
+            "path": "personal_info.nationality",
+            "label": "Nationality",
+            "also_accept": ["personal_info.nationality_second"],
+        },
+        {"path": "personal_info.place_of_residence", "label": "Place of residence"},
+        {"path": "countries_of_experience", "label": "Countries of experience"},
+        {"path": "education", "label": "Education"},
+        {"path": "languages", "label": "Languages"},
+    ],
+    "world_bank": [
+        {"path": "personal_info.date_of_birth", "label": "Date of birth"},
+        {
+            "path": "personal_info.nationality",
+            "label": "Nationality",
+            "also_accept": ["personal_info.nationality_second"],
+        },
+        {"path": "countries_of_experience", "label": "Countries of experience"},
+        {"path": "education", "label": "Education"},
+        {"path": "languages", "label": "Languages"},
+        {"path": "employment_record", "label": "Employment record"},
+    ],
+}
+
+
 SYSTEM_PROMPT_A5 = """
 You are the Content Reviewer agent in a document processing pipeline. You
 receive a fully generated CVData object, the original DistilledToR, and a
@@ -558,6 +600,101 @@ def _inject_experience_gap_finding(
     return [finding]
 
 
+def _is_empty_value(value) -> bool:
+    """A required field counts as empty when it is None, a blank/whitespace-only
+    string, or an empty list."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def _get_by_dot_path(data: dict, path: str):
+    """Walk a dot-only path (e.g. 'personal_info.nationality') into a dict.
+    Returns None if any segment is missing or a segment isn't a dict."""
+    current = data
+    for segment in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+    return current
+
+
+def _inject_empty_required_field_findings(
+    review: dict,
+    cv_data: dict,
+    donor: str,
+) -> list[dict]:
+    """
+    Inject a high_severity "human review" finding for each donor-required field
+    that is empty in the generated CV (date_of_birth, nationality, etc.), so the
+    UI surfaces fields the recruiter must supply from outside the source CV.
+
+    De-duplicates against findings the LLM reviewer already raised. Does NOT set
+    `passed` — `_enforce_passed_field` (always last) handles that.
+
+    Returns the list of injected findings (for audit).
+    """
+    specs = REQUIRED_FIELDS_BY_DONOR.get(donor) or REQUIRED_FIELDS_BY_DONOR["giz"]
+
+    existing = review.get("high_severity", []) or []
+    injected: list[dict] = []
+
+    for spec in specs:
+        path = spec["path"]
+        label = spec["label"]
+
+        if not _is_empty_value(_get_by_dot_path(cv_data, path)):
+            continue
+        # An acceptable alternative being present suppresses the flag
+        # (e.g. only nationality_second populated still counts as "has nationality").
+        if any(
+            not _is_empty_value(_get_by_dot_path(cv_data, alt))
+            for alt in spec.get("also_accept", [])
+        ):
+            continue
+
+        # De-dup: skip if the reviewer already flagged this path or named the field.
+        label_lc = label.lower()
+        already = False
+        for e in existing + injected:
+            e_path = (e.get("path") or "")
+            if e_path == path or e_path.startswith(path + ".") or e_path.startswith(path + "["):
+                already = True
+                break
+            text = f"{e.get('field', '')} {e.get('issue', '')}".lower()
+            if label_lc in text and any(
+                kw in text
+                for kw in ("missing", "empty", "not provided", "not stated", "absent")
+            ):
+                already = True
+                break
+        if already:
+            continue
+
+        finding = {
+            "path": path,
+            "field": label,
+            "issue": (
+                f"{label} is empty in the generated CV — it was either not present "
+                "in the source document or could not be reliably extracted."
+            ),
+            "recommendation": (
+                f"Human review required: obtain {label.lower()} from the candidate "
+                "or recruiter and add it before submission."
+            ),
+            "solvability": "human",
+            "_injected_by_postprocessing": True,
+        }
+        review.setdefault("high_severity", []).append(finding)
+        injected.append(finding)
+
+    return injected
+
+
 def _filter_word_count_pedantry(review: dict) -> list[dict]:
     """
     P2 fix (Issue 5.4): Remove low_severity word-count entries within
@@ -596,6 +733,7 @@ def _filter_word_count_pedantry(review: dict) -> list[dict]:
 def _apply_post_processing(
     review: dict,
     pre_computed: dict,
+    cv_data: dict,
 ) -> dict:
     """
     Apply all deterministic post-processing rules to the review dict.
@@ -603,11 +741,17 @@ def _apply_post_processing(
     """
     audit: dict[str, list] = {
         "experience_gap_injections": [],
+        "empty_required_field_injections": [],
         "word_count_removals": [],
     }
 
     # P0: Inject experience gap if missing
     audit["experience_gap_injections"] = _inject_experience_gap_finding(review, pre_computed)
+
+    # Inject "human review" findings for empty donor-required fields
+    audit["empty_required_field_injections"] = _inject_empty_required_field_findings(
+        review, cv_data, pre_computed.get("donor", "giz")
+    )
 
     # P2: Word count tolerance
     audit["word_count_removals"] = _filter_word_count_pedantry(review)
@@ -737,8 +881,11 @@ def run(run_dir: Path) -> tuple[CVData, bool]:
             f"Content Reviewer produced invalid data after applying fixes: {exc}"
         ) from exc
 
-    # Apply all deterministic post-processing
-    _apply_post_processing(review, pre_computed)
+    # Apply all deterministic post-processing. Pass the post-fix generated data
+    # (exactly what is written to generated_fields.json["generated"]) so the
+    # empty-required-field check sees any values populated upstream (e.g. the A1
+    # countries-of-experience fallback) and never false-flags them.
+    _apply_post_processing(review, pre_computed, cv_data_out.model_dump())
 
     passed = review.get("passed", False)
 

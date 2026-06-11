@@ -231,3 +231,29 @@ class TestSystemPromptA1JsonOnly:
     def test_first_char_rule_present(self):
         assert "FIRST non-whitespace" in SYSTEM_PROMPT_A1
 
+
+# ---------------------------------------------------------------------------
+# Countries of experience — derive from project/employment locations
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptA1CountriesDerivation:
+    """countries_of_experience derivation rules must be present in SYSTEM_PROMPT_A1."""
+
+    def test_countries_section_present(self):
+        assert "Countries of experience" in SYSTEM_PROMPT_A1
+
+    def test_dedicated_section_first_rule(self):
+        lower = SYSTEM_PROMPT_A1.lower()
+        assert "dedicated" in lower and "countries_of_experience" in SYSTEM_PROMPT_A1
+
+    def test_per_country_derivation_rule(self):
+        assert "PER COUNTRY" in SYSTEM_PROMPT_A1
+
+    def test_region_exclusion_example(self):
+        # The region exclusion example must be present so cities/regions aren't extracted.
+        assert "South & Central Asia" in SYSTEM_PROMPT_A1
+
+    def test_warning_contract_substring(self):
+        # Keep aligned with the Python dedup marker in cv_extractor._derive_countries.
+        assert "countries_of_experience derived from" in SYSTEM_PROMPT_A1
+

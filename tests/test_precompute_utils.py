@@ -72,7 +72,7 @@ _SAMPLE_CV: dict = {
     ],
     "key_qualifications": ["Grid engineer", "SCADA specialist"],
     "other_relevant_info": "Published three papers.",
-    "other_skills": ["Python", "GIS"],
+    "other_skills": "Python; GIS",
     "employment_record": [
         {"description": "Senior consultant at GFA."},
     ],
@@ -94,8 +94,7 @@ class TestCountWordsPerField:
         assert "key_qualifications[0]" in result
         assert "key_qualifications[1]" in result
         assert "other_relevant_info" in result
-        assert "other_skills[0]" in result
-        assert "other_skills[1]" in result
+        assert "other_skills" in result
         assert "employment_record[0].description" in result
         assert "training[0]" in result
         assert "publications[0]" in result

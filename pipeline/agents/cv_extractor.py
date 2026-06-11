@@ -15,11 +15,12 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
-from models import CVData, RelevantProject
+from models import CountryExperience, CVData, RelevantProject
 from pipeline.config import ANTHROPIC_MODEL_EXTRACTOR, ANTHROPIC_MAX_TOKENS_EXTRACTOR
 from pipeline.manifest import update_step
 from pipeline.utils import call_agent_json
 from pipeline.utils.cefr import map_cefr, map_numeric_scale_inverted
+from pipeline.utils.countries import find_countries
 
 client = Anthropic()
 
@@ -236,6 +237,34 @@ literal date — a pair with `date_to = "Present"` is always correctly ordered.
 This corrects transcription errors in the source document while making the
 correction fully visible via extraction_warnings for human verification.
 
+### Countries of experience
+
+Populate ``countries_of_experience`` so the CV's geography section is never
+empty when the source document mentions any country at all.
+
+1. **Dedicated section first.** If the CV has a dedicated countries/geography
+   section or table (e.g. "Countries of Work Experience"), extract it directly
+   with its stated date ranges.
+2. **Otherwise derive from locations.** If no dedicated section exists, DERIVE
+   the list from the location fields of the work experience — both
+   ``relevant_projects[].location`` and ``employment_record[]`` locations.
+   - Emit one ``CountryExperience`` entry PER COUNTRY found in an entry's
+     location, using THAT entry's ``date_from`` / ``date_to`` as the range.
+   - Duplicates across projects are fine — downstream Python merges identical
+     date ranges, so do not attempt to combine or de-duplicate here.
+   - Extract ONLY actual countries — never cities or regions. Examples:
+     - "Essen / Germany" → Germany
+     - "Kabul, Afghanistan / Baden, Switzerland" → Afghanistan AND Switzerland
+     - "Sri Lanka, India, Bhutan, Nepal, Bangladesh" → all five countries
+     - "South & Central Asia" → nothing (a region, not a country)
+     - "Gräfenberg" → nothing (a city with no country)
+3. **Warn when derived.** When the list is DERIVED (not taken from a dedicated
+   section), append exactly ONE ``extraction_warnings`` entry:
+   ``"countries_of_experience derived from project/employment locations — no
+   dedicated countries section found in CV. Verify list and date ranges."``
+4. **Leave empty only if nothing is found.** If no country can be identified
+   anywhere, leave ``countries_of_experience`` as ``[]``.
+
 ### Text normalisation
 - Normalise all proper nouns (names, institutions, companies, countries) to
   Title Case.
@@ -322,8 +351,9 @@ Route content to fields based on the SOURCE DOCUMENT'S OWN LABEL, not the
 content type:
 
 - Section labelled "Other skills" (or "Other relevant skills", "Additional
-  skills", or close variants) → ``other_skills``. This applies even when the
-  content is certification- or training-style.
+  skills", or close variants) → ``other_skills`` (free text — join multiple
+  entries with "; "). This applies even when the content is certification- or
+  training-style.
 - Section labelled "Certifications" (or "Professional certifications",
   "Certificates") → ``certifications``.
 - Section labelled "Training" (or "Long-term training", "Professional
@@ -535,6 +565,63 @@ def _apply_employment_fallback(parsed: CVData) -> None:
     parsed.extraction_warnings.append(fallback_warning)
 
 
+# Substring shared by the A1 prompt's derived-countries warning and the Python
+# fallback warning below, used to dedup one against the other.
+_COUNTRIES_DERIVED_MARKER = "countries_of_experience derived from"
+
+
+def _derive_countries_from_projects(parsed: CVData) -> None:
+    """
+    Python-side safety net: if the LLM left ``countries_of_experience`` empty,
+    derive it from the location fields of relevant_projects (and employment
+    records), one CountryExperience per country found, using that entry's date
+    range. Mirrors the prompt's derivation rule so a CV with no dedicated
+    countries section still produces geography data.
+
+    Rows are emitted raw (single-country, not collapsed/sorted) — Agent 3
+    (cv_tor_mapper) owns collapse-by-date-range and date sorting downstream.
+
+    Idempotent: does nothing when countries_of_experience is already non-empty.
+    """
+    if parsed.countries_of_experience:
+        return  # LLM (or a dedicated CV section) already populated it
+
+    # (location_text, date_from, date_to) from projects first, then employment.
+    sources: list[tuple[str, str, str]] = []
+    for proj in parsed.relevant_projects:
+        sources.append((proj.location or "", proj.date_from or "", proj.date_to or ""))
+    for emp in parsed.employment_record:
+        loc = f"{emp.location or ''} {emp.country or ''}".strip()
+        sources.append((loc, emp.from_date or "", emp.to_date or ""))
+
+    seen: set[tuple[str, str, str]] = set()
+    derived: list[CountryExperience] = []
+    for location_text, date_from, date_to in sources:
+        for country in find_countries(location_text):
+            key = (country, date_from, date_to)
+            if key in seen:
+                continue
+            seen.add(key)
+            derived.append(
+                CountryExperience(country=country, date_from=date_from, date_to=date_to)
+            )
+
+    if not derived:
+        return  # nothing matched — leave [] (flagged for human review downstream)
+
+    parsed.countries_of_experience = derived
+
+    # Dedup against any prompt-derived warning, then record the Python one.
+    parsed.extraction_warnings = [
+        w for w in parsed.extraction_warnings if _COUNTRIES_DERIVED_MARKER not in w
+    ]
+    parsed.extraction_warnings.append(
+        "Python fallback: countries_of_experience derived from project/employment "
+        "locations (no dedicated countries section found in CV). Verify country "
+        "list and date ranges."
+    )
+
+
 def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
     """
     Extract CV text into a CVData object, inject pipeline params, and write
@@ -597,6 +684,11 @@ def run(run_dir: Path, cv_text: str, params: dict) -> CVData:
     # downstream agents always have project data.  Runs after CEFR so the
     # final parsed object is fully normalised before the fallback fires.
     _apply_employment_fallback(parsed)
+
+    # Python-side safety net: if countries_of_experience is still empty, derive
+    # it from project/employment locations (runs after the employment fallback
+    # so fallback-created projects are also scanned).
+    _derive_countries_from_projects(parsed)
 
     output = {
         "approved": False,

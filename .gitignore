@@ -18,6 +18,9 @@ runs/*
 !runs/.gitkeep
 scripts/runs/
 
+# Local debugging artifacts (sample CVs, retrieved run artifacts)
+temp/
+
 # Local samples / secrets
 supabase_creds.txt
 uploadtest.pdf

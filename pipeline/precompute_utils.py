@@ -46,7 +46,7 @@ def count_words_per_field(cv_data: dict[str, Any]) -> dict[str, int]:
       "generated_fields[0].content"
       "key_qualifications[2]"
       "other_relevant_info"
-      "other_skills[0]"
+      "other_skills"
       "employment_record[0].description"
       "training[0]"
       "publications[0]"
@@ -72,9 +72,9 @@ def count_words_per_field(cv_data: dict[str, Any]) -> dict[str, int]:
     if val:
         result["other_relevant_info"] = count_words(val)
 
-    for i, item in enumerate(cv_data.get("other_skills", [])):
-        if item:
-            result[f"other_skills[{i}]"] = count_words(item)
+    skills = cv_data.get("other_skills", "")
+    if skills:
+        result["other_skills"] = count_words(skills)
 
     for i, item in enumerate(cv_data.get("employment_record", [])):
         desc = item.get("description", "")

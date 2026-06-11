@@ -93,6 +93,32 @@ class TestCVDataNewFields:
 
 
 # ---------------------------------------------------------------------------
+# other_skills is now free text (str), with legacy-list coercion
+# ---------------------------------------------------------------------------
+
+class TestOtherSkillsCoercion:
+    def test_defaults_to_empty_string(self):
+        assert CVData().other_skills == ""
+
+    def test_string_passthrough(self):
+        cv = CVData(other_skills="Negotiation; Leadership")
+        assert cv.other_skills == "Negotiation; Leadership"
+
+    def test_legacy_list_coerced_to_joined_string(self):
+        cv = CVData(other_skills=["Python", " GIS ", ""])
+        assert cv.other_skills == "Python; GIS"
+
+    def test_none_coerced_to_empty_string(self):
+        cv = CVData(other_skills=None)
+        assert cv.other_skills == ""
+
+    def test_legacy_artifact_with_list_round_trips(self):
+        # A generated_fields.json written before the change carries a list.
+        cv = CVData.model_validate({"other_skills": ["A", "B"]})
+        assert cv.other_skills == "A; B"
+
+
+# ---------------------------------------------------------------------------
 # Backward compatibility
 # ---------------------------------------------------------------------------
 

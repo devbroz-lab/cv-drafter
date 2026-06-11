@@ -3,7 +3,7 @@ title: A5 — Content Reviewer
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-09
+last_verified: 2026-06-11
 code_refs:
   - pipeline/agents/content_reviewer.py
   - pipeline/validation.py
@@ -12,6 +12,7 @@ code_refs:
 related:
   - reference/data-model.md
   - design/0001-lean-agent-output-contracts.md
+  - design/0004-empty-field-review-flags-countries-derivation-and-render-placeholders.md
 ---
 
 # A5 — Content Reviewer
@@ -53,8 +54,23 @@ Deterministic facts injected for the LLM (it must not recompute them): `tier`,
 
 - `_inject_experience_gap_finding` — for `team_lead` tier with an energy-sector gap ≥ threshold,
   injects a standardised high-severity finding (`solvability: "human"`).
+- `_inject_empty_required_field_findings` — injects a high-severity `solvability: "human"` finding
+  for each **donor-required** field that is empty in the generated CV (`_injected_by_postprocessing:
+  True`). The required set is `REQUIRED_FIELDS_BY_DONOR` (in `content_reviewer.py`), kept aligned with
+  the renderer placeholders (see `reference/renderer.md`):
+
+  | Donor | Required (flagged when empty) |
+  |-------|-------------------------------|
+  | giz | `personal_info.date_of_birth`, `personal_info.nationality` (or `nationality_second`), `personal_info.place_of_residence`, `countries_of_experience`, `education`, `languages` |
+  | world_bank | `personal_info.date_of_birth`, `personal_info.nationality` (or `nationality_second`), `countries_of_experience`, `education`, `languages`, `employment_record` |
+
+  Runs on the **post-fix generated data** (so an A1-derived `countries_of_experience` is never
+  false-flagged), and **de-dups** against findings the LLM already raised (matching path or
+  field-name + an emptiness keyword). Unknown donor → `giz` set. Audited under
+  `review.demoted.empty_required_field_injections`.
 - `_filter_word_count_pedantry` — drops low-severity word-count flags within tolerance.
-- `_enforce_passed_field` — forces `passed=false` whenever `high_severity` is non-empty.
+- `_enforce_passed_field` — forces `passed=false` whenever `high_severity` is non-empty (so the
+  empty-field findings also block the review step / show `reviewer_blocked`).
 
 ## Contracts & invariants
 

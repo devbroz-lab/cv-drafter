@@ -3,7 +3,7 @@ title: A6 — Compressor
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-09
+last_verified: 2026-06-11
 code_refs:
   - pipeline/agents/compressor.py
   - pipeline/precompute_utils.py
@@ -59,3 +59,4 @@ from the pre-compression copy. WB compresses `activities_performed` normally.
 - `words_after` is always the Python-computed authoritative count, not the LLM's estimate.
 - `check_compressor_warnings` (`pipeline/validators.py`) emits `applied_false` /
   `target_not_reached` / `words_after_suspiciously_low` soft-flags, backfilled onto the manifest.
+- `other_skills` is a single free-text string (one compressible unit), not a per-item list.

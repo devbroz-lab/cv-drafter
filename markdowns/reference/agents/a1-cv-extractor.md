@@ -3,16 +3,18 @@ title: A1 — CV Extractor
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-09
+last_verified: 2026-06-11
 code_refs:
   - pipeline/agents/cv_extractor.py
   - pipeline/utils/cefr.py
+  - pipeline/utils/countries.py
   - pipeline/utils/llm.py
   - models.py
 related:
   - reference/extraction.md
   - reference/data-model.md
   - reference/artifacts.md
+  - design/0004-empty-field-review-flags-countries-derivation-and-render-placeholders.md
 ---
 
 # A1 — CV Extractor
@@ -34,9 +36,14 @@ JSON-only output, strict extraction (no invention). Notable rules:
   the candidate's actions.
 - **Employment-only fallback.** If `relevant_projects` is empty but `employment_record` exists, map
   each employment entry to a project (`description → main_project_features`).
+- **Countries-of-experience derivation.** If the CV has no dedicated countries section, derive
+  `countries_of_experience` from project/employment **locations** — one entry per country, using that
+  entry's date range; cities/regions are excluded. Emits a `countries_of_experience derived from …`
+  warning. (Python safety net mirrors this — see below.)
 - Merged-cell/two-column project tables, date-ordering validation (swap inverted ranges),
   placeholder detection, label-driven `other_skills`/`certifications`/`training` routing,
   certifications dual-routing, references-vs-publications routing, certification declaration.
+  `other_skills` is **free text** (a `str`, joined with `"; "`), not a list.
 - Leaves `proposed_position`/`category`/`employer`/`years_with_firm`/`generated_fields` empty
   (injected/filled later).
 
@@ -46,6 +53,12 @@ JSON-only output, strict extraction (no invention). Notable rules:
 2. `_populate_cefr_fields` — maps `*_raw` language levels to `*_cefr` via `pipeline/utils/cefr.py`,
    respecting `language_scale_direction` (numeric 1=best vs 1=worst).
 3. `_apply_employment_fallback` — Python safety net mirroring the prompt's fallback (idempotent).
+4. `_derive_countries_from_projects` — Python safety net (idempotent): if `countries_of_experience`
+   is still empty, scan `relevant_projects[].location` + `employment_record` locations with
+   `find_countries` (`pipeline/utils/countries.py`, deterministic word-boundary matching against an
+   ISO-3166 list + alias table) and emit one **raw single-country** `CountryExperience` per
+   `(country, date_from, date_to)`. A3 collapses/sorts them downstream, so A1 does not. Appends the
+   `Python fallback: countries_of_experience derived from …` warning.
 
 ## Contracts & invariants
 

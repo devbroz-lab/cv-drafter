@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Sub-models
@@ -232,9 +232,9 @@ class CVData(BaseModel):
     membership_professional_bodies: str = Field(
         default="", description="Membership in professional bodies — free text (GIZ field)"
     )
-    other_skills: list[str] = Field(
-        default_factory=list,
-        description="Other relevant skills, short-term trainings, workshops (GIZ field)",
+    other_skills: str = Field(
+        default="",
+        description="Other relevant skills, short-term trainings, workshops — free text (GIZ field)",
     )
     training: list[str] = Field(
         default_factory=list, description="Longer training courses and programs (WB field)"
@@ -330,6 +330,18 @@ class CVData(BaseModel):
             "Renderers prefer generated_fields over extracted equivalents."
         ),
     )
+
+    @field_validator("other_skills", mode="before")
+    @classmethod
+    def _coerce_other_skills(cls, value):
+        """other_skills is now free text (str). Coerce legacy list values from
+        older artifacts (e.g. when A7/re-render re-validates a completed run)
+        into a '; '-joined string so they don't raise a validation error."""
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple)):
+            return "; ".join(str(item).strip() for item in value if str(item).strip())
+        return value
 
 
 # ---------------------------------------------------------------------------

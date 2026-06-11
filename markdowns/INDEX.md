@@ -3,7 +3,7 @@ title: Documentation Index
 type: meta
 status: current
 owner: backend
-last_verified: 2026-06-09
+last_verified: 2026-06-11
 code_refs: []
 related: [CONVENTIONS.md]
 ---
@@ -48,6 +48,7 @@ registered below; if it's not here, it doesn't count.
 | [design/0001-lean-agent-output-contracts.md](design/0001-lean-agent-output-contracts.md) | Lean agent contracts + parse-failure recovery (Opus-4.8 oversized output) | accepted |
 | [design/0002-pdfplumber-extraction-hardening.md](design/0002-pdfplumber-extraction-hardening.md) | Extraction hardening (DOCX robustness + pdfplumber + fail-fast) | accepted |
 | [design/0003-manifest-progress-warnings.md](design/0003-manifest-progress-warnings.md) | Real-time progress & warnings on the polled `/manifest` | accepted |
+| [design/0004-empty-field-review-flags-countries-derivation-and-render-placeholders.md](design/0004-empty-field-review-flags-countries-derivation-and-render-placeholders.md) | Empty-field review flags, countries derivation, render placeholders, `other_skills`→str | accepted |
 
 ## Frontend — consumer contracts
 

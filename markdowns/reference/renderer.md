@@ -3,9 +3,10 @@ title: Renderer (GIZ & World Bank)
 type: reference
 status: current
 owner: backend
-last_verified: 2026-06-09
+last_verified: 2026-06-11
 code_refs:
   - templates/registry.py
+  - templates/base.py
   - templates/giz.py
   - templates/wb.py
   - templates/giz_dynamic_template.py
@@ -15,6 +16,8 @@ related:
   - reference/artifacts.md
   - reference/data-model.md
   - reference/agents/a4-fields-generator.md
+  - reference/agents/a5-content-reviewer.md
+  - design/0004-empty-field-review-flags-countries-derivation-and-render-placeholders.md
 ---
 
 # Renderer
@@ -61,6 +64,20 @@ The GIZ project row renders `project_name`, `positions_held`, dates, location, c
 project text the reader sees is `main_project_features`; A4 writes the full project narrative there
 (see `reference/agents/a4-fields-generator.md`). WB renders `main_project_features` and
 `activities_performed` separately, plus the generated `detailed_tasks`.
+
+## Empty required-field placeholders
+
+`templates/base.NOT_FOUND_PLACEHOLDER` (`"[Not found in source CV]"`) is substituted **inside
+`_build_context`** for donor-required fields that are empty — the artifacts (`generated_fields.json`)
+keep `""`/`[]`, so agent prompts, A5's empty-field check, and A7 edits are unaffected. The required
+set mirrors `REQUIRED_FIELDS_BY_DONOR` (`reference/agents/a5-content-reviewer.md`): GIZ scalars
+`date_of_birth` / `place_of_residence` / `nationality_display`; WB scalars `date_of_birth` /
+`nationality` / `countries_display`. Empty required **tables** (education, languages,
+countries_of_experience; WB also employment_record) emit **one** placeholder row — the `counts` dict
+in `run()` counts it, so the dynamic template expands one row. Non-required empty fields (e.g. a
+project's `client`) are never placeholdered.
+
+`other_skills` is a free-text `str`; `other_skills_display` is the value directly (no list join).
 
 ## Output & upload
 

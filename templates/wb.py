@@ -29,6 +29,7 @@ from pipeline.paths import (
     get_wb_dynamic_template_path,
     get_wb_dynamic_unpack_dir,
 )
+from templates.base import NOT_FOUND_PLACEHOLDER, other_skills_text, placeholder_if_empty
 from templates.wb_dynamic_template import build_dynamic_template
 
 
@@ -60,6 +61,12 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
+    # Required field: show a placeholder row when no education was extracted.
+    if not education:
+        education.append(
+            {"institution": NOT_FOUND_PLACEHOLDER, "degree": "", "date_obtained": ""}
+        )
+
     languages = []
     for lang in cv.get("languages", []):
         languages.append(
@@ -68,6 +75,17 @@ def _build_context(cv: dict) -> dict:
                 "reading_raw": lang.get("reading_raw", "").strip(),
                 "speaking_raw": lang.get("speaking_raw", "").strip(),
                 "writing_raw": lang.get("writing_raw", "").strip(),
+            }
+        )
+
+    # Required field: show a placeholder row when no languages were extracted.
+    if not languages:
+        languages.append(
+            {
+                "language": NOT_FOUND_PLACEHOLDER,
+                "reading_raw": "",
+                "speaking_raw": "",
+                "writing_raw": "",
             }
         )
 
@@ -86,6 +104,12 @@ def _build_context(cv: dict) -> dict:
                 "position": emp.get("positions_held", "").strip(),
                 "country": emp.get("country", "").strip(),
             }
+        )
+
+    # Required field (WB only): placeholder row when no employment was extracted.
+    if not employment_record:
+        employment_record.append(
+            {"period": "", "employer": NOT_FOUND_PLACEHOLDER, "position": "", "country": ""}
         )
 
     # Fix 5: include ALL detailed_tasks entries (including empty ones) so that
@@ -129,14 +153,15 @@ def _build_context(cv: dict) -> dict:
 
     # Fix 6: computed display strings missing from previous _build_context.
     # These mirror the pattern already used by giz.py.
-    countries_display = ", ".join(
-        ce.get("country", "").strip()
-        for ce in cv.get("countries_of_experience", [])
-        if ce.get("country", "").strip()
+    # Required field: placeholder when no countries were extracted or derived.
+    countries_display = placeholder_if_empty(
+        ", ".join(
+            ce.get("country", "").strip()
+            for ce in cv.get("countries_of_experience", [])
+            if ce.get("country", "").strip()
+        )
     )
-    other_skills_display = "; ".join(
-        s.strip() for s in cv.get("other_skills", []) if s.strip()
-    )
+    other_skills_display = other_skills_text(cv.get("other_skills", ""))
 
     return {
         "proposed_position": cv.get("proposed_position", "").strip(),
@@ -147,8 +172,9 @@ def _build_context(cv: dict) -> dict:
         "other_skills_display": other_skills_display,
         "personal_info": {
             "full_name": pi.get("full_name", "").strip(),
-            "date_of_birth": pi.get("date_of_birth", "").strip(),
-            "nationality": pi.get("nationality", "").strip(),
+            # Required fields: placeholder when empty in the source CV.
+            "date_of_birth": placeholder_if_empty(pi.get("date_of_birth", "").strip()),
+            "nationality": placeholder_if_empty(pi.get("nationality", "").strip()),
             "email": pi.get("email", "").strip(),
             "phone": pi.get("phone", "").strip(),
         },
@@ -183,8 +209,7 @@ def estimate_word_count(cv: dict) -> int:
     for kq in cv.get("key_qualifications", []):
         total += w(kq)
     total += w(cv.get("other_relevant_info", ""))
-    for skill in cv.get("other_skills", []):
-        total += w(skill)
+    total += w(other_skills_text(cv.get("other_skills", "")))
     for item in cv.get("training", []):
         total += w(item)
     for pub in cv.get("publications", []):

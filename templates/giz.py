@@ -51,6 +51,7 @@ from pipeline.paths import (
     get_giz_dynamic_unpack_dir,
     get_run_dir,
 )
+from templates.base import NOT_FOUND_PLACEHOLDER, other_skills_text, placeholder_if_empty
 from templates.giz_dynamic_template import build_dynamic_template
 
 from pipeline.precompute_utils import _parse_date
@@ -128,6 +129,17 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
+    # Required field: show a placeholder row when no education was extracted.
+    if not education:
+        education.append(
+            {
+                "institution": _xml_str(NOT_FOUND_PLACEHOLDER),
+                "date_from": "",
+                "date_to": "",
+                "degree": "",
+            }
+        )
+
     # Language rows — CEFR mapped at render time
     def _resolve_cefr(entry: dict, cefr_field: str, raw_field: str) -> str:
         cefr = entry.get(cefr_field, "").strip()
@@ -147,11 +159,20 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
-    # R7-F: _xml_str applied to joined strings so ampersands in skill names
-    # are not stripped by the XML parser.
-    other_skills_display = _xml_str(
-        "; ".join(s.strip() for s in cv.get("other_skills", []) if s.strip())
-    )
+    # Required field: show a placeholder row when no languages were extracted.
+    if not languages:
+        languages.append(
+            {
+                "language": _xml_str(NOT_FOUND_PLACEHOLDER),
+                "reading_cefr": "",
+                "speaking_cefr": "",
+                "writing_cefr": "",
+            }
+        )
+
+    # R7-F: _xml_str escapes ampersands. other_skills is free text (a string);
+    # other_skills_text coerces a legacy list defensively.
+    other_skills_display = _xml_str(other_skills_text(cv.get("other_skills", "")))
 
     # Key qualifications — prefer generated_fields over extracted list
     # R7-F: _xml_str escapes any '&' in bullet text.
@@ -182,6 +203,18 @@ def _build_context(cv: dict) -> dict:
             }
         )
 
+    # Required field: show a placeholder row when no countries were extracted
+    # or derived (A1's location fallback also failed).
+    if not countries_of_experience:
+        countries_of_experience.append(
+            {
+                "country": _xml_str(NOT_FOUND_PLACEHOLDER),
+                "date_from": "",
+                "date_to": "",
+                "date_range": "",
+            }
+        )
+
     # Relevant projects rows
     # R7-F: _xml_str applied to all string fields so ampersands in project
     # names, client names, locations, etc. are not stripped by the XML parser.
@@ -208,7 +241,10 @@ def _build_context(cv: dict) -> dict:
     # '&' characters would produce invalid XML and get stripped by the parser.
     nat1 = pi.get("nationality", "").strip()
     nat2 = pi.get("nationality_second", "").strip()
-    nationality_display = _xml_str(f"{nat1} and {nat2}" if (nat1 and nat2) else (nat1 or nat2))
+    # Required field: placeholder when neither nationality is present.
+    nationality_display = _xml_str(
+        placeholder_if_empty(f"{nat1} and {nat2}" if (nat1 and nat2) else (nat1 or nat2))
+    )
 
     return {
         # Identity
@@ -223,8 +259,11 @@ def _build_context(cv: dict) -> dict:
             "first_names": _xml_str(pi.get("first_names", "").strip()),
             "family_name": _xml_str(pi.get("family_name", "").strip()),
             "full_name": _xml_str(pi.get("full_name", "").strip()),
-            "date_of_birth": _xml_str(pi.get("date_of_birth", "").strip()),
-            "place_of_residence": _xml_str(pi.get("place_of_residence", "").strip()),
+            # Required fields: placeholder when empty in the source CV.
+            "date_of_birth": _xml_str(placeholder_if_empty(pi.get("date_of_birth", "").strip())),
+            "place_of_residence": _xml_str(
+                placeholder_if_empty(pi.get("place_of_residence", "").strip())
+            ),
             "email": _xml_str(pi.get("email", "").strip()),
             "phone": _xml_str(pi.get("phone", "").strip()),
         },
@@ -273,8 +312,7 @@ def estimate_word_count(cv: dict) -> int:
     for kq in cv.get("key_qualifications", []):
         total += w(kq)
     total += w(cv.get("other_relevant_info", ""))
-    for skill in cv.get("other_skills", []):
-        total += w(skill)
+    total += w(other_skills_text(cv.get("other_skills", "")))
     for pub in cv.get("publications", []):
         total += w(pub)
     return total
